@@ -1,0 +1,6 @@
+{
+  "name": "PrintDrop - Smart Printing Service",
+  "description": "Fast and contactless print order system. Scan QR, upload documents, track print queue in real time, and manage print jobs with admin dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
