@@ -1,11 +1,10 @@
-import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import express from 'express';
 import { createServer as createViteServer } from 'vite';
-import apiRouter from './server/routes.ts';
-import { initDatabase } from './server/db.ts';
-import { startCleanupScheduler } from './server/cleanup.ts';
+import app from './server/app';
+import { startCleanupScheduler } from './server/cleanup';
 
 dotenv.config();
 
@@ -16,25 +15,8 @@ const isProduction = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT) || 3000;
 
 async function startServer() {
-  const app = express();
-
-  // Initialize persistent database
-  initDatabase();
-
-  // Start background file cleanup worker
+  // Start background file cleanup worker (in persistent dev/container mode)
   startCleanupScheduler();
-
-  // Request body parsers (support multi-file base64 uploads up to 50MB)
-  app.use(express.json({ limit: '50mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-
-  // Mount API router
-  app.use('/api', apiRouter);
-
-  // Health check endpoint
-  app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok', time: new Date().toISOString() });
-  });
 
   if (!isProduction) {
     // Mount Vite dev server in middleware mode

@@ -93,20 +93,135 @@ export async function trackOrder(
   return data;
 }
 
+const DEVICE_ID_KEY = 'printdrop_device_id';
+
+export function getDeviceId(): string {
+  let id = localStorage.getItem(DEVICE_ID_KEY);
+  if (!id) {
+    id = `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    localStorage.setItem(DEVICE_ID_KEY, id);
+  }
+  return id;
+}
+
+export function getDeviceName(): string {
+  const ua = navigator.userAgent;
+  let browser = 'Browser';
+  if (ua.includes('Chrome')) browser = 'Chrome';
+  else if (ua.includes('Safari')) browser = 'Safari';
+  else if (ua.includes('Firefox')) browser = 'Firefox';
+  else if (ua.includes('Edge')) browser = 'Edge';
+
+  let os = 'Device';
+  if (ua.includes('Mac')) os = 'Mac';
+  else if (ua.includes('Win')) os = 'Windows PC';
+  else if (ua.includes('iPhone')) os = 'iPhone';
+  else if (ua.includes('Android')) os = 'Android';
+  else if (ua.includes('Linux')) os = 'Linux';
+
+  return `${os} (${browser})`;
+}
+
 export async function adminLogin(
   username: string,
   password: string
-): Promise<{ success: boolean; token: string; username: string }> {
+): Promise<{
+  success: boolean;
+  token?: string;
+  username?: string;
+  requireApproval?: boolean;
+  requestId?: string;
+  message?: string;
+  isPrimary?: boolean;
+  device?: any;
+}> {
+  const deviceId = getDeviceId();
+  const deviceName = getDeviceName();
+
   const res = await fetch('/api/admin/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, deviceId, deviceName }),
   });
   const data = await res.json();
   if (!res.ok) {
     throw new Error(data.error || 'Login failed');
   }
-  setAdminToken(data.token);
+  if (data.token) {
+    setAdminToken(data.token);
+  }
+  return data;
+}
+
+export async function pollDeviceApprovalStatus(
+  requestId?: string,
+  deviceId?: string
+): Promise<{
+  approved: boolean;
+  status: string;
+  token?: string;
+  device?: any;
+}> {
+  const params = new URLSearchParams();
+  if (requestId) params.set('requestId', requestId);
+  if (deviceId) params.set('deviceId', deviceId);
+
+  const res = await fetch(`/api/admin/device-approval/status?${params.toString()}`);
+  const data = await res.json();
+  if (data.token) {
+    setAdminToken(data.token);
+  }
+  return data;
+}
+
+export async function fetchAuthorizedDevices(): Promise<any[]> {
+  const res = await fetch('/api/admin/devices', {
+    headers: getAuthHeaders(),
+  });
+  const data = await res.json();
+  return data.devices || [];
+}
+
+export async function approveDeviceApi(deviceId: string): Promise<void> {
+  const res = await fetch('/api/admin/devices/approve', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ deviceId }),
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.error || 'Failed to approve device');
+  }
+}
+
+export async function revokeDeviceApi(deviceId: string): Promise<void> {
+  const res = await fetch('/api/admin/devices/revoke', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ deviceId }),
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.error || 'Failed to revoke device');
+  }
+}
+
+export async function recoverDeviceApi(masterKey: string): Promise<{ success: boolean; token: string }> {
+  const deviceId = getDeviceId();
+  const deviceName = getDeviceName();
+
+  const res = await fetch('/api/admin/devices/recover', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ masterKey, deviceId, deviceName }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || 'Recovery failed. Invalid master key.');
+  }
+  if (data.token) {
+    setAdminToken(data.token);
+  }
   return data;
 }
 

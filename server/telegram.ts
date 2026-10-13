@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PrintOrder, OrderFile } from '../src/types/print';
-import { getDatabase, saveDatabase, logAudit } from './db';
+import { getDatabase, saveDatabase, logAudit, getPgPool, fetchOrderById } from './db';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 
@@ -96,7 +96,7 @@ export async function testTelegramConnection(): Promise<{
  * Dispatches order notification and actual customer files to Telegram.
  * Implements Section H: Automatic Temporary File Cleanup upon confirmed delivery.
  */
-export async function dispatchOrderToTelegram(orderId: string): Promise<{
+export async function dispatchOrderToTelegram(orderOrId: string | PrintOrder): Promise<{
   deliveredFiles: number;
   totalFiles: number;
   overallStatus: 'delivered' | 'failed' | 'not_configured';
@@ -105,15 +105,24 @@ export async function dispatchOrderToTelegram(orderId: string): Promise<{
   const token = getBotToken();
   const chatId = getChatId();
 
-  const db = getDatabase();
-  const order = db.orders.find(o => o.id === orderId);
+  let order: PrintOrder | null = null;
+  if (typeof orderOrId === 'string') {
+    order = await fetchOrderById(orderOrId);
+  } else {
+    order = orderOrId;
+  }
+
   if (!order) {
     return { deliveredFiles: 0, totalFiles: 0, overallStatus: 'failed', error: 'Order not found' };
   }
 
+  const db = getDatabase();
+  const cachedOrder = db.orders.find(o => o.id === order!.id);
+
   if (!token || !chatId) {
     order.telegramStatus = 'not_configured';
     order.telegramDeliveryError = 'TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not configured in server environment.';
+    if (cachedOrder) cachedOrder.telegramStatus = 'not_configured';
     saveDatabase(db);
     return { deliveredFiles: 0, totalFiles: order.files.length, overallStatus: 'not_configured' };
   }
@@ -242,6 +251,24 @@ export async function dispatchOrderToTelegram(orderId: string): Promise<{
       order.telegramStatus = 'failed';
       order.telegramDeliveryError = `Delivered ${deliveredCount} of ${order.files.length} files. Review individual file errors.`;
       logAudit('telegram', 'ORDER_PARTIAL_DELIVERY', `Order ${order.id} delivered ${deliveredCount}/${order.files.length} files.`);
+    }
+
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        await pool.query(
+          `UPDATE printdrop_orders SET telegram_status = $1, telegram_error = $2 WHERE id = $3`,
+          [order.telegramStatus, order.telegramDeliveryError, order.id]
+        );
+        for (const f of order.files) {
+          await pool.query(
+            `UPDATE printdrop_order_files SET telegram_status = $1, telegram_file_id = $2, is_deleted_from_disk = $3 WHERE id = $4`,
+            [f.telegramStatus, f.telegramFileId, f.isDeletedFromDisk, f.id]
+          );
+        }
+      } catch (pgErr) {
+        console.error('[Telegram] Failed syncing status to Neon:', pgErr);
+      }
     }
 
     saveDatabase(db);

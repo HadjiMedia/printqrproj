@@ -122,3 +122,17 @@ export interface OrderStats {
   todayRevenue: number;
   totalPages: number;
 }
+
+export interface TrustedDevice {
+  id: string;
+  deviceId: string;
+  deviceName: string;
+  userAgent?: string;
+  ipAddress?: string;
+  status: 'pending' | 'approved' | 'revoked';
+  isPrimary: boolean;
+  requestId?: string;
+  requestedAt: string;
+  approvedAt?: string;
+  approvedBy?: string;
+}

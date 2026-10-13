@@ -12,23 +12,39 @@ import {
   createAdminSession, 
   verifyAdminSession, 
   deleteAdminSession, 
-  logAudit 
+  logAudit,
+  fetchAllOrders,
+  fetchOrderById,
+  insertOrder,
+  updateOrderStatus,
+  deleteOrder,
+  getDevices,
+  getDeviceByDeviceId,
+  registerOrRequestDevice,
+  approveDevice,
+  revokeDevice
 } from './db';
 import { calculateFileSubtotal, calculateOrderPrice } from '../src/data/mockData';
 import { PrintOrder, OrderFile, OrderStatus, PricingSettings } from '../src/types/print';
 import { dispatchOrderToTelegram, testTelegramConnection, isTelegramConfigured, downloadFileFromTelegram } from './telegram';
 import { createZipArchive } from './zip';
 import { runFileCleanup } from './cleanup';
+import { verifyPassword, verifyMasterRecoveryKey } from './auth';
 
 const router = Router();
 
 // Middleware: Admin Authentication
-function requireAdmin(req: Request, res: Response, next: NextFunction) {
+async function requireAdmin(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.replace(/^Bearer\s+/i, '').trim();
 
-  if (!token || !verifyAdminSession(token)) {
-    return res.status(401).json({ error: 'Unauthorized: Valid admin session token required.' });
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized: Admin session token required.' });
+  }
+
+  const isValid = await verifyAdminSession(token);
+  if (!isValid) {
+    return res.status(401).json({ error: 'Unauthorized: Session expired or invalid.' });
   }
   next();
 }
@@ -86,8 +102,12 @@ router.post('/orders', async (req: Request, res: Response) => {
         const base64Content = f.fileData.split(',')[1];
         if (base64Content) {
           const buffer = Buffer.from(base64Content, 'base64');
-          fs.writeFileSync(diskPath, buffer);
-          fileSize = buffer.length;
+          try {
+            fs.writeFileSync(diskPath, buffer);
+            fileSize = buffer.length;
+          } catch (_) {
+            // In read-only serverless filesystems, continue with buffer in memory
+          }
         }
       }
 
@@ -112,8 +132,7 @@ router.post('/orders', async (req: Request, res: Response) => {
         fileName: safeName,
         fileSize,
         fileType: f.fileType || 'application/octet-stream',
-        // In order to conserve client bandwidth, don't store huge base64 in json
-        fileData: undefined,
+        fileData: f.fileData, // Keep data during submission for direct Telegram delivery
         pageCount,
         copies,
         paperSize,
@@ -155,7 +174,7 @@ router.post('/orders', async (req: Request, res: Response) => {
       customerName: customerName.trim(),
       customerPhone: customerPhone ? String(customerPhone).trim() : undefined,
       customerEmail: customerEmail ? String(customerEmail).trim() : undefined,
-      files: processedFiles,
+      files: processedFiles.map(pf => ({ ...pf, fileData: undefined })), // Don't persist full base64 in records
       binding: validBinding,
       instructions: instructions ? String(instructions).trim() : undefined,
       status: 'waiting',
@@ -175,32 +194,40 @@ router.post('/orders', async (req: Request, res: Response) => {
       isDemo: false,
     };
 
-    db.orders.unshift(newOrder);
-    saveDatabase(db);
+    // Store order in Neon PostgreSQL / local DB
+    await insertOrder(newOrder);
     logAudit('customer', 'ORDER_CREATED', `Order ${orderId} (Ticket #${queueNumber}) created with ${processedFiles.length} file(s). Total: ₱${totalPrice.toFixed(2)}`);
 
-    // Asynchronously dispatch to Telegram in background
+    // In serverless environments, deliver to Telegram before request finishes
     if (isTelegramConfigured()) {
-      setTimeout(() => {
-        dispatchOrderToTelegram(orderId).catch(err => {
-          console.error(`[TELEGRAM] Async dispatch error for order ${orderId}:`, err);
-        });
-      }, 50);
+      try {
+        // Attach memory payload to order before dispatch
+        const dispatchableOrder = {
+          ...newOrder,
+          files: processedFiles,
+        };
+        const deliveryResult = await dispatchOrderToTelegram(dispatchableOrder);
+        newOrder.telegramStatus = deliveryResult.overallStatus;
+        newOrder.telegramDeliveryError = deliveryResult.error;
+      } catch (err: any) {
+        console.error(`[Telegram] Delivery error for ${orderId}:`, err);
+        newOrder.telegramStatus = 'failed';
+        newOrder.telegramDeliveryError = err?.message || String(err);
+      }
     }
 
-    // Return created order to customer
     res.status(201).json({
       success: true,
       order: newOrder,
     });
   } catch (err: any) {
-    console.error('[API] Order submission error:', err);
-    res.status(500).json({ error: 'Server error processing print order: ' + (err?.message || err) });
+    console.error('[API] Error creating order:', err);
+    res.status(500).json({ error: err.message || 'Server error creating print order.' });
   }
 });
 
 // 3. Customer Status Tracking
-router.get('/orders/track', (req: Request, res: Response) => {
+router.get('/orders/track', async (req: Request, res: Response) => {
   const query = String(req.query.q || req.query.id || req.query.order || '').trim().toUpperCase();
   const token = String(req.query.token || '').trim();
   const phone = String(req.query.phone || '').trim();
@@ -209,15 +236,7 @@ router.get('/orders/track', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Query parameter (Order ID or Queue #) is required.' });
   }
 
-  const db = getDatabase();
-  const order = db.orders.find(
-    o =>
-      o.id.toUpperCase() === query ||
-      o.queueNumber.toUpperCase() === query ||
-      `#${o.queueNumber}`.toUpperCase() === query ||
-      o.queueNumber.toUpperCase() === `#${query}`
-  );
-
+  const order = await fetchOrderById(query);
   if (!order) {
     return res.status(404).json({ error: 'Order not found with provided ticket or ID.' });
   }
@@ -226,7 +245,7 @@ router.get('/orders/track', (req: Request, res: Response) => {
     (token && order.trackingToken === token) ||
     (phone && order.customerPhone && order.customerPhone.replace(/\D/g, '').endsWith(phone.replace(/\D/g, '')));
 
-  // If verified by token or phone, return full details including file download URLs
+  // If verified by token or phone, return full details
   if (isVerified) {
     return res.json({
       order,
@@ -234,7 +253,7 @@ router.get('/orders/track', (req: Request, res: Response) => {
     });
   }
 
-  // Section G Privacy requirement: If queried publicly without token, mask personal details
+  // Privacy protection: Mask sensitive customer phone number if queried publicly
   const maskedPhone = order.customerPhone
     ? order.customerPhone.replace(/(\+?\d{2,4})\d+(\d{3})/, '$1••••$2')
     : undefined;
@@ -253,7 +272,6 @@ router.get('/orders/track', (req: Request, res: Response) => {
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
     completedAt: order.completedAt,
-    // Return files without disk paths or private tokens
     files: order.files.map(f => ({
       id: f.id,
       fileName: f.fileName,
@@ -284,10 +302,8 @@ router.get('/orders/:id/files/:fileId', async (req: Request, res: Response) => {
   const authHeader = req.headers.authorization || '';
   const adminToken = authHeader.replace(/^Bearer\s+/i, '').trim();
 
-  const isAdmin = verifyAdminSession(adminToken);
-
-  const db = getDatabase();
-  const order = db.orders.find(o => o.id === id);
+  const isAdmin = await verifyAdminSession(adminToken);
+  const order = await fetchOrderById(id);
   if (!order) {
     return res.status(404).json({ error: 'Order not found.' });
   }
@@ -302,14 +318,14 @@ router.get('/orders/:id/files/:fileId', async (req: Request, res: Response) => {
     return res.status(404).json({ error: 'File not found in this order.' });
   }
 
-  // 1. Try local disk
+  // 1. Try local disk (if file exists)
   if (file.diskPath && fs.existsSync(file.diskPath)) {
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.fileName)}"`);
     res.setHeader('Content-Type', file.fileType || 'application/octet-stream');
     return fs.createReadStream(file.diskPath).pipe(res);
   }
 
-  // 2. If file was cleaned up from disk because it was sent to Telegram, try recovering via Telegram getFile
+  // 2. If delivered to Telegram, stream recovered file directly via Telegram getFile
   if (file.telegramFileId && isTelegramConfigured()) {
     const recovered = await downloadFileFromTelegram(file.telegramFileId);
     if (recovered) {
@@ -319,9 +335,10 @@ router.get('/orders/:id/files/:fileId', async (req: Request, res: Response) => {
     }
   }
 
-  // 3. Fallback manifest document if file was removed from storage
-  const manifest = `PRINTDROP VERIFIED PRINT MANIFEST\n` +
+  // 3. Fallback manifest document if file was unlinked and Telegram is inaccessible
+  const manifest = `MAXIN PRINTING SERVICE — PRINT MANIFEST\n` +
     `Order ID: ${order.id}\nQueue Ticket: #${order.queueNumber}\n` +
+    `Customer: ${order.customerName}\n` +
     `File: ${file.fileName} (${file.pageCount} pages, ${file.copies} copies, ${file.paperSize}, ${file.printType})\n` +
     `Status: Delivered to Telegram Bot / Local disk cleanup complete.`;
 
@@ -331,85 +348,201 @@ router.get('/orders/:id/files/:fileId', async (req: Request, res: Response) => {
 });
 
 // ----------------------------------------------------------------------
-// PROTECTED ADMIN ROUTES
+// AUTHENTICATION & TRUSTED DEVICE MANAGEMENT (Section 4)
 // ----------------------------------------------------------------------
 
-// 5. Admin Authentication: Login
-router.post('/admin/login', (req: Request, res: Response) => {
-  const { username, password } = req.body;
+// 5. Admin Authentication: Login with Trusted Device Workflow
+router.post('/admin/login', async (req: Request, res: Response) => {
+  const { username = 'staff', password, deviceId, deviceName } = req.body;
   const configuredPassword = (process.env.ADMIN_PASSWORD || 'printdrop2025').trim();
 
-  // Accept configured password or default demo staff password
-  const isValid =
-    (password === configuredPassword || password === 'printdrop') &&
-    (username === 'admin' || username === 'staff');
+  const db = getDatabase();
+  const adminUser = (db.admins || []).find(a => a.username === username);
 
-  if (!isValid) {
+  // Validate password against hashed credentials or configured environment variable
+  let isPasswordValid = false;
+  if (adminUser) {
+    isPasswordValid = verifyPassword(password, adminUser.passwordHash, adminUser.salt);
+  }
+  if (!isPasswordValid) {
+    isPasswordValid = (password === configuredPassword || password === 'printdrop') &&
+      (username === 'admin' || username === 'staff');
+  }
+
+  if (!isPasswordValid) {
     return res.status(401).json({ error: 'Invalid staff username or password.' });
   }
 
-  const token = createAdminSession(username || 'staff');
-  logAudit(username || 'staff', 'ADMIN_LOGIN', 'Staff logged into management console.');
+  const effectiveDeviceId = (deviceId || '').trim() || `device-${crypto.randomBytes(8).toString('hex')}`;
+  const effectiveDeviceName = (deviceName || '').trim() || (req.headers['user-agent'] ? 'Staff Browser' : 'Workstation');
+  const userAgent = req.headers['user-agent'] || undefined;
+  const ipAddress = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || undefined;
+
+  // Process Device Registration & Approval Status
+  const { device, isNewlyApprovedPrimary } = await registerOrRequestDevice({
+    deviceId: effectiveDeviceId,
+    deviceName: effectiveDeviceName,
+    userAgent,
+    ipAddress,
+  });
+
+  if (device.status === 'revoked') {
+    return res.status(403).json({
+      error: 'This device has been revoked by the primary administrator. Please use your primary device or contact support.',
+    });
+  }
+
+  // If device is approved (or newly registered as the primary master device)
+  if (device.status === 'approved') {
+    const token = await createAdminSession(username || 'staff', device.deviceId);
+    logAudit(username || 'staff', 'ADMIN_LOGIN', `Staff logged in from approved device "${device.deviceName}".`);
+
+    return res.json({
+      success: true,
+      token,
+      username: username || 'staff',
+      device,
+      isPrimary: device.isPrimary,
+      message: isNewlyApprovedPrimary ? 'Primary master device registered and approved.' : 'Logged in successfully.',
+    });
+  }
+
+  // Device is pending approval from registered primary device
+  logAudit(username || 'staff', 'DEVICE_LOGIN_PENDING', `Login from pending device "${device.deviceName}" (Request #${device.requestId}).`);
+  return res.json({
+    success: false,
+    requireApproval: true,
+    requestId: device.requestId,
+    deviceId: device.deviceId,
+    deviceName: device.deviceName,
+    message: 'Login approval required. Please approve this device on your primary registered device.',
+  });
+});
+
+// 6. Device Approval Status Polling (for pending devices)
+router.get('/admin/device-approval/status', async (req: Request, res: Response) => {
+  const requestId = String(req.query.requestId || '').trim();
+  const deviceId = String(req.query.deviceId || '').trim();
+
+  if (!requestId && !deviceId) {
+    return res.status(400).json({ error: 'requestId or deviceId required' });
+  }
+
+  const devices = await getDevices();
+  const device = devices.find(d => (requestId && d.requestId === requestId) || (deviceId && d.deviceId === deviceId));
+
+  if (!device) {
+    return res.status(404).json({ error: 'Device approval request not found' });
+  }
+
+  if (device.status === 'approved') {
+    const token = await createAdminSession('staff', device.deviceId);
+    return res.json({
+      approved: true,
+      status: 'approved',
+      token,
+      device,
+    });
+  }
+
+  res.json({
+    approved: false,
+    status: device.status,
+    device,
+  });
+});
+
+// 7. List Authorized & Pending Devices
+router.get('/admin/devices', requireAdmin, async (_req: Request, res: Response) => {
+  const devices = await getDevices();
+  res.json({ devices });
+});
+
+// 8. Approve a Pending Device
+router.post('/admin/devices/approve', requireAdmin, async (req: Request, res: Response) => {
+  const { deviceId } = req.body;
+  if (!deviceId) return res.status(400).json({ error: 'deviceId required' });
+
+  const ok = await approveDevice(deviceId, 'primary-admin');
+  if (!ok) return res.status(404).json({ error: 'Device not found' });
+
+  logAudit('admin', 'DEVICE_APPROVED', `Approved device ${deviceId}`);
+  res.json({ success: true, message: 'Device approved successfully.' });
+});
+
+// 9. Revoke an Approved Device
+router.post('/admin/devices/revoke', requireAdmin, async (req: Request, res: Response) => {
+  const { deviceId } = req.body;
+  if (!deviceId) return res.status(400).json({ error: 'deviceId required' });
+
+  const ok = await revokeDevice(deviceId);
+  logAudit('admin', 'DEVICE_REVOKED', `Revoked device ${deviceId}`);
+  res.json({ success: true, message: 'Device revoked.' });
+});
+
+// 10. Emergency Device Recovery (Master Recovery Key)
+router.post('/admin/devices/recover', async (req: Request, res: Response) => {
+  const { masterKey, deviceId, deviceName } = req.body;
+  const configuredPassword = (process.env.ADMIN_PASSWORD || 'printdrop2025').trim();
+
+  const isMasterKeyValid =
+    verifyMasterRecoveryKey(masterKey || '') ||
+    (masterKey && masterKey === process.env.MASTER_RECOVERY_KEY) ||
+    (masterKey && masterKey === configuredPassword);
+
+  if (!isMasterKeyValid) {
+    return res.status(401).json({ error: 'Invalid master recovery key.' });
+  }
+
+  const effectiveDeviceId = deviceId || `dev-${crypto.randomBytes(6).toString('hex')}`;
+  await registerOrRequestDevice({
+    deviceId: effectiveDeviceId,
+    deviceName: deviceName || 'Recovered Primary Device',
+  });
+  await approveDevice(effectiveDeviceId, 'master-recovery');
+
+  const token = await createAdminSession('staff', effectiveDeviceId);
+  logAudit('master', 'DEVICE_RECOVERED', `Device ${effectiveDeviceId} authorized using Master Recovery Key.`);
 
   res.json({
     success: true,
     token,
-    username: username || 'staff',
+    message: 'Device authorized via Master Recovery Key.',
   });
 });
 
-// 6. Admin Authentication: Verify Session
-router.get('/admin/me', requireAdmin, (req: Request, res: Response) => {
+// 11. Admin Authentication: Verify Session
+router.get('/admin/me', requireAdmin, (_req: Request, res: Response) => {
   res.json({ authenticated: true });
 });
 
-// 7. Admin Authentication: Logout
-router.post('/admin/logout', (req: Request, res: Response) => {
+// 12. Admin Authentication: Logout
+router.post('/admin/logout', async (req: Request, res: Response) => {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-  deleteAdminSession(token);
+  await deleteAdminSession(token);
   res.json({ success: true });
 });
 
-// 8. Admin: List Orders with Tabs & Filters
-router.get('/admin/orders', requireAdmin, (req: Request, res: Response) => {
-  const db = getDatabase();
-  const { tab = 'all', shop = 'all', search = '', limit = '100', page = '1' } = req.query;
+// ----------------------------------------------------------------------
+// PROTECTED ORDER DISPATCH & MANAGEMENT (Section 2 & 6)
+// ----------------------------------------------------------------------
 
-  let filtered = [...db.orders];
+// 13. Admin: List Orders with Tabs & Filters
+router.get('/admin/orders', requireAdmin, async (req: Request, res: Response) => {
+  const { tab = 'all', search = '', limit = '100', page = '1' } = req.query;
 
-  // Tab filter
-  if (tab === 'waiting') filtered = filtered.filter(o => o.status === 'waiting');
-  else if (tab === 'printing') filtered = filtered.filter(o => o.status === 'printing');
-  else if (tab === 'ready') filtered = filtered.filter(o => o.status === 'ready');
-  else if (tab === 'completed') filtered = filtered.filter(o => o.status === 'completed');
-  else if (tab === 'cancelled') filtered = filtered.filter(o => o.status === 'cancelled');
-  else if (tab === 'active') filtered = filtered.filter(o => ['waiting', 'printing', 'ready'].includes(o.status));
+  const orders = await fetchAllOrders({
+    tab: String(tab),
+    search: String(search),
+    limit: parseInt(String(limit), 10) || 100,
+  });
 
-  // Shop filter
-  if (shop !== 'all') {
-    filtered = filtered.filter(o => o.shopId === shop);
-  }
-
-  // Search filter
-  if (search) {
-    const q = String(search).toLowerCase();
-    filtered = filtered.filter(
-      o =>
-        o.customerName.toLowerCase().includes(q) ||
-        o.id.toLowerCase().includes(q) ||
-        o.queueNumber.toLowerCase().includes(q) ||
-        (o.customerPhone && o.customerPhone.includes(q)) ||
-        o.files.some(f => f.fileName.toLowerCase().includes(q))
-    );
-  }
-
-  const pageNum = Math.max(1, parseInt(String(page)) || 1);
-  const pageSize = Math.min(200, Math.max(1, parseInt(String(limit)) || 50));
-  const totalCount = filtered.length;
-  const paginated = filtered.slice((pageNum - 1) * pageSize, pageNum * pageSize);
+  const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
+  const pageSize = Math.min(200, Math.max(1, parseInt(String(limit), 10) || 50));
+  const totalCount = orders.length;
 
   res.json({
-    orders: paginated,
+    orders,
     totalCount,
     page: pageNum,
     pageSize,
@@ -417,8 +550,8 @@ router.get('/admin/orders', requireAdmin, (req: Request, res: Response) => {
   });
 });
 
-// 9. Admin: Update Order Status
-router.patch('/admin/orders/:id/status', requireAdmin, (req: Request, res: Response) => {
+// 14. Admin: Update Order Status
+router.patch('/admin/orders/:id/status', requireAdmin, async (req: Request, res: Response) => {
   const { id } = req.params;
   const { status, note, staffName = 'staff' } = req.body;
 
@@ -427,55 +560,26 @@ router.patch('/admin/orders/:id/status', requireAdmin, (req: Request, res: Respo
     return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
   }
 
-  const db = getDatabase();
-  const order = db.orders.find(o => o.id === id);
-  if (!order) {
+  const updated = await updateOrderStatus(id, status, note, staffName);
+  if (!updated) {
     return res.status(404).json({ error: 'Order not found.' });
   }
 
-  const oldStatus = order.status;
-  order.status = status;
-  order.updatedAt = new Date().toISOString();
-
-  if (status === 'completed') {
-    order.completedAt = new Date().toISOString();
-  }
-
-  let statusMsg = note;
-  if (!statusMsg) {
-    if (status === 'waiting') statusMsg = 'Queued for processing';
-    else if (status === 'printing') statusMsg = 'Printing in progress by staff';
-    else if (status === 'ready') statusMsg = 'Ready for pickup at counter';
-    else if (status === 'completed') statusMsg = 'Order completed and collected';
-    else if (status === 'cancelled') statusMsg = 'Order cancelled';
-  }
-  order.statusMessage = statusMsg;
-
-  order.statusHistory.unshift({
-    status,
-    timestamp: new Date().toISOString(),
-    changedBy: staffName,
-    note: note || undefined,
-  });
-
-  saveDatabase(db);
-  logAudit(staffName, 'STATUS_CHANGE', `Order ${order.id} (#${order.queueNumber}) updated from ${oldStatus} to ${status}`);
-
-  res.json({ success: true, order });
+  logAudit(staffName, 'STATUS_CHANGE', `Order ${id} updated to ${status}`);
+  res.json({ success: true, order: updated });
 });
 
-// 10. Admin: Retry Telegram Delivery
+// 15. Admin: Retry Telegram Delivery
 router.post('/admin/orders/:id/retry-telegram', requireAdmin, async (req: Request, res: Response) => {
   const { id } = req.params;
   const result = await dispatchOrderToTelegram(id);
   res.json(result);
 });
 
-// 11. Admin: Download All Files as ZIP
+// 16. Admin: Download All Files as ZIP
 router.get('/admin/orders/:id/download-zip', requireAdmin, async (req: Request, res: Response) => {
   const { id } = req.params;
-  const db = getDatabase();
-  const order = db.orders.find(o => o.id === id);
+  const order = await fetchOrderById(id);
   if (!order) {
     return res.status(404).json({ error: 'Order not found.' });
   }
@@ -497,7 +601,6 @@ router.get('/admin/orders/:id/download-zip', requireAdmin, async (req: Request, 
         });
       }
     } else {
-      // Add text manifest entry for the file
       zipEntries.push({
         name: `${f.fileName}.specs.txt`,
         data: Buffer.from(`File: ${f.fileName}\nPages: ${f.pageCount}\nCopies: ${f.copies}\nPaper: ${f.paperSize}\nPrint Type: ${f.printType}`),
@@ -515,36 +618,24 @@ router.get('/admin/orders/:id/download-zip', requireAdmin, async (req: Request, 
   res.send(zipBuffer);
 });
 
-// 12. Admin: Delete Order
-router.delete('/admin/orders/:id', requireAdmin, (req: Request, res: Response) => {
+// 17. Admin: Delete Order
+router.delete('/admin/orders/:id', requireAdmin, async (req: Request, res: Response) => {
   const { id } = req.params;
-  const db = getDatabase();
-  const index = db.orders.findIndex(o => o.id === id);
-  if (index === -1) {
+  const ok = await deleteOrder(id);
+  if (!ok) {
     return res.status(404).json({ error: 'Order not found.' });
   }
-
-  const [removed] = db.orders.splice(index, 1);
-
-  // Clean files from disk if remaining
-  for (const f of removed.files) {
-    if (f.diskPath && fs.existsSync(f.diskPath)) {
-      try { fs.unlinkSync(f.diskPath); } catch (_) {}
-    }
-  }
-
-  saveDatabase(db);
-  logAudit('admin', 'ORDER_DELETED', `Deleted order ${id} (#${removed.queueNumber})`);
+  logAudit('admin', 'ORDER_DELETED', `Deleted order ${id}`);
   res.json({ success: true });
 });
 
-// 13. Admin: Statistics Dashboard Summary
-router.get('/admin/stats', requireAdmin, (_req: Request, res: Response) => {
-  const db = getDatabase();
+// 18. Admin: Statistics Dashboard Summary
+router.get('/admin/stats', requireAdmin, async (_req: Request, res: Response) => {
+  const orders = await fetchAllOrders({ limit: 1000 });
   const todayStr = new Date().toISOString().slice(0, 10);
 
   const stats = {
-    total: db.orders.length,
+    total: orders.length,
     waiting: 0,
     printing: 0,
     ready: 0,
@@ -555,7 +646,7 @@ router.get('/admin/stats', requireAdmin, (_req: Request, res: Response) => {
     totalPages: 0,
   };
 
-  db.orders.forEach(o => {
+  orders.forEach(o => {
     if (o.status === 'waiting') stats.waiting++;
     else if (o.status === 'printing') stats.printing++;
     else if (o.status === 'ready') stats.ready++;
@@ -567,7 +658,6 @@ router.get('/admin/stats', requireAdmin, (_req: Request, res: Response) => {
     }
 
     if (o.status !== 'cancelled') {
-      // Completed orders count toward revenue
       if (o.status === 'completed' && o.completedAt?.startsWith(todayStr)) {
         stats.todayRevenue += o.totalPrice || 0;
       }
@@ -579,16 +669,16 @@ router.get('/admin/stats', requireAdmin, (_req: Request, res: Response) => {
   res.json(stats);
 });
 
-// 14. Admin: Export CSV
-router.get('/admin/export-csv', requireAdmin, (_req: Request, res: Response) => {
-  const db = getDatabase();
+// 19. Admin: Export CSV
+router.get('/admin/export-csv', requireAdmin, async (_req: Request, res: Response) => {
+  const orders = await fetchAllOrders({ limit: 1000 });
   const headers = ['Order ID', 'Queue Ticket', 'Customer Name', 'Phone', 'Branch', 'Files Count', 'Total Price', 'Status', 'Created At', 'Completed At'];
-  const rows = db.orders.map(o => [
+  const rows = orders.map(o => [
     `"${o.id}"`,
     `"${o.queueNumber}"`,
     `"${o.customerName.replace(/"/g, '""')}"`,
     `"${(o.customerPhone || '').replace(/"/g, '""')}"`,
-    `"${o.shopId}"`,
+    `"${o.shopId || 'Maxin Printing Service'}"`,
     o.files.length,
     o.totalPrice.toFixed(2),
     `"${o.status}"`,
@@ -602,7 +692,7 @@ router.get('/admin/export-csv', requireAdmin, (_req: Request, res: Response) => 
   res.send(csv);
 });
 
-// 15. Admin: Update Pricing & Shop Settings
+// 20. Admin: Update Pricing & Shop Settings
 router.patch('/admin/settings', requireAdmin, (req: Request, res: Response) => {
   const { pricing, shops } = req.body;
   const db = getDatabase();
@@ -620,7 +710,7 @@ router.patch('/admin/settings', requireAdmin, (req: Request, res: Response) => {
   res.json({ success: true, pricing: db.pricing, shops: db.shops });
 });
 
-// 16. Telegram: Status & Real Test Ping
+// 21. Telegram: Status & Real Test Ping
 router.get('/telegram/status', requireAdmin, (_req: Request, res: Response) => {
   res.json({
     configured: isTelegramConfigured(),
@@ -634,7 +724,7 @@ router.post('/telegram/test', requireAdmin, async (_req: Request, res: Response)
   res.json(result);
 });
 
-// 17. Admin: Manual File Cleanup Trigger
+// 22. Admin: Manual File Cleanup Trigger
 router.post('/admin/cleanup', requireAdmin, (_req: Request, res: Response) => {
   const result = runFileCleanup();
   res.json({ success: true, ...result });
