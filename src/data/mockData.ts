@@ -1,4 +1,4 @@
-import { ShopLocation, PrintOrder, PricingSettings } from '../types/print';
+import { ShopLocation, PrintOrder, PricingSettings } from '../types/print.js';
 
 export const DEFAULT_PRICING: PricingSettings = {
   currency: 'PHP',
