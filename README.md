@@ -10,7 +10,7 @@ Staff manage incoming print jobs from a live admin dashboard, receive instant no
 
 - **Frontend:** React 19, TypeScript, Vite, Tailwind CSS v4, Lucide Icons
 - **Backend:** Node.js Express server (`server.ts`) with custom REST APIs (`/api/*`)
-- **Database & Storage:** Atomic persistent JSON database (`data/printdrop_db.json`) with safe temporary swap writes
+- **Database & Storage:** Neon/PostgreSQL for durable production orders, statuses, and settings; local JSON storage is only a development fallback
 - **Temporary Upload Storage:** `data/uploads/` with automated lifecycle cleanup
 - **Telegram Integration:** Direct Telegram Bot API client uploading documents/photos to staff Telegram channels
 - **ZIP Bundler:** Built-in zero-dependency ZIP archive generator using Node `zlib`
@@ -38,6 +38,10 @@ Copy `.env.example` to `.env`:
 ```bash
 # Public URL of the application (used in QR codes and staff links)
 APP_URL="https://your-domain.com"
+
+# Required in production: connection string from your Neon/PostgreSQL database
+# Add the real value to Vercel Project Settings > Environment Variables for Production
+DATABASE_URL="postgresql://USER:PASSWORD@HOST/DATABASE?sslmode=require"
 
 # Telegram Bot API Token (from @BotFather)
 TELEGRAM_BOT_TOKEN="123456789:ABCdefGhIJKlmNoPQRstuvWxyz"
