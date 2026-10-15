@@ -501,7 +501,12 @@ export async function fetchAllOrders(filter?: {
     }
   }
 
-  // Fallback to in-memory/JSON
+  // Vercel instances cannot share a JSON/memory order store. Never present mock cache data as live orders.
+  if (isServerless) {
+    throw new OrderPersistenceError('DATABASE_NOT_CONFIGURED', 'Order storage is not configured on the server. Please contact Maxin counter staff.');
+  }
+
+  // Local development fallback only.
   const db = getDatabase();
   let orders = [...db.orders];
   if (filter?.tab) {
@@ -605,7 +610,12 @@ export async function fetchOrderById(id: string): Promise<PrintOrder | null> {
     }
   }
 
-  // Memory fallback
+  // Vercel instances cannot share a JSON/memory order store.
+  if (isServerless) {
+    throw new OrderPersistenceError('DATABASE_NOT_CONFIGURED', 'Order storage is not configured on the server. Please contact Maxin counter staff.');
+  }
+
+  // Local development fallback only.
   const db = getDatabase();
   const q = id.toUpperCase();
   const found = db.orders.find(
@@ -636,6 +646,10 @@ export async function fetchOrderByClientRequestId(clientRequestId: string): Prom
         throw new OrderPersistenceError('DATABASE_UNAVAILABLE', 'Order data could not be synchronized with the database. Please try again.');
       }
     }
+  }
+
+  if (isServerless) {
+    throw new OrderPersistenceError('DATABASE_NOT_CONFIGURED', 'Order storage is not configured on the server. Please contact Maxin counter staff.');
   }
 
   const db = getDatabase();
