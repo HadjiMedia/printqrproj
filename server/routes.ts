@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { 
   getDatabase, 
   saveDatabase, 
+  getPgPool,
   generateOrderId, 
   generateQueueNumber, 
   generateTrackingToken, 
@@ -109,9 +110,40 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
 // 1. Get Shop & Pricing Settings
 router.get('/settings', async (_req: Request, res: Response, next: NextFunction) => {
   try {
+    const pricing = await loadPricingSettings();
+    const shops = await loadShops();
+
+    // Dynamically synchronize live active queue count & estimated wait time from database
+    let activeQueueCount = 0;
+    const pool = getPgPool();
+    if (pool) {
+      try {
+        const countRes = await pool.query(
+          "SELECT COUNT(*) FROM printdrop_orders WHERE status IN ('waiting', 'printing', 'ready')"
+        );
+        activeQueueCount = parseInt(countRes.rows[0]?.count, 10) || 0;
+      } catch (err) {
+        console.warn('[API] Could not query active queue count:', err);
+      }
+    } else {
+      const db = getDatabase();
+      activeQueueCount = (db.orders || []).filter(o => ['waiting', 'printing', 'ready'].includes(o.status)).length;
+    }
+
+    const synchronizedShops = shops.map((shop, idx) => {
+      if (idx === 0) {
+        return {
+          ...shop,
+          activeQueueCount,
+          avgWaitMins: Math.max(2, activeQueueCount * 3),
+        };
+      }
+      return shop;
+    });
+
     res.json({
-      pricing: await loadPricingSettings(),
-      shops: await loadShops(),
+      pricing,
+      shops: synchronizedShops,
       telegramConfigured: isTelegramConfigured(),
     });
   } catch (err) {
