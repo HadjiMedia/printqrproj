@@ -733,6 +733,147 @@ export function AdminView({
                   />
                 </div>
               </div>
+
+              {/* A3 Large Paper */}
+              <div className="p-4 rounded-xl border border-[#D4DDD5] bg-[#F7F8F5] space-y-3">
+                <span className="font-bold text-sm text-[#20352A]">A3 Large Paper</span>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-[#5A6E64]">B&W (₱/page)</label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={pricing.pagePrices.A3?.bw ?? 12}
+                    onChange={e => setPricing({
+                      ...pricing,
+                      pagePrices: {
+                        ...pricing.pagePrices,
+                        A3: { ...pricing.pagePrices.A3, bw: parseFloat(e.target.value) || 0, color: pricing.pagePrices.A3?.color ?? 20 }
+                      }
+                    })}
+                    className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] font-bold"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-[#5A6E64]">Color (₱/page)</label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={pricing.pagePrices.A3?.color ?? 20}
+                    onChange={e => setPricing({
+                      ...pricing,
+                      pagePrices: {
+                        ...pricing.pagePrices,
+                        A3: { ...pricing.pagePrices.A3, color: parseFloat(e.target.value) || 0, bw: pricing.pagePrices.A3?.bw ?? 12 }
+                      }
+                    })}
+                    className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] font-bold"
+                  />
+                </div>
+              </div>
+
+              {/* Photo Paper — Glossy */}
+              <div className="p-4 rounded-xl border border-amber-300 bg-amber-50/40 space-y-3">
+                <span className="font-bold text-sm text-amber-900 flex items-center gap-1">
+                  <span>Photo Paper (Glossy)</span>
+                </span>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-[#5A6E64]">B&W Photo (₱/sheet)</label>
+                  <input
+                    type="number"
+                    step="1"
+                    value={pricing.photoPaperPrices?.glossy?.bw ?? 25}
+                    onChange={e => setPricing({
+                      ...pricing,
+                      photoPaperPrices: {
+                        ...pricing.photoPaperPrices,
+                        glossy: { 
+                          bw: parseFloat(e.target.value) || 0, 
+                          color: pricing.photoPaperPrices?.glossy?.color ?? 35 
+                        }
+                      }
+                    })}
+                    className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] font-bold text-amber-950"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-[#5A6E64]">Color Photo (₱/sheet)</label>
+                  <input
+                    type="number"
+                    step="1"
+                    value={pricing.photoPaperPrices?.glossy?.color ?? 35}
+                    onChange={e => setPricing({
+                      ...pricing,
+                      photoPaperPrices: {
+                        ...pricing.photoPaperPrices,
+                        glossy: { 
+                          color: parseFloat(e.target.value) || 0, 
+                          bw: pricing.photoPaperPrices?.glossy?.bw ?? 25 
+                        }
+                      }
+                    })}
+                    className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] font-bold text-amber-950"
+                  />
+                </div>
+              </div>
+
+              {/* Job Surcharges (Back-to-Back, Borderless, High Quality) */}
+              <div className="p-4 rounded-xl border border-[#23664B] bg-emerald-50/30 space-y-3">
+                <span className="font-bold text-sm text-[#23664B]">Print Job Surcharges</span>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-[#5A6E64]">Back-to-Back Surcharge (₱/job)</label>
+                  <input
+                    type="number"
+                    step="1"
+                    value={pricing.surcharges?.backToBack ?? 5}
+                    onChange={e => setPricing({
+                      ...pricing,
+                      surcharges: {
+                        ...pricing.surcharges,
+                        backToBack: parseFloat(e.target.value) || 0,
+                        borderless: pricing.surcharges?.borderless ?? 5,
+                        highQuality: pricing.surcharges?.highQuality ?? 10,
+                      }
+                    })}
+                    className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] font-bold"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-[#5A6E64]">Borderless Surcharge (₱/job)</label>
+                  <input
+                    type="number"
+                    step="1"
+                    value={pricing.surcharges?.borderless ?? 5}
+                    onChange={e => setPricing({
+                      ...pricing,
+                      surcharges: {
+                        ...pricing.surcharges,
+                        borderless: parseFloat(e.target.value) || 0,
+                        backToBack: pricing.surcharges?.backToBack ?? 5,
+                        highQuality: pricing.surcharges?.highQuality ?? 10,
+                      }
+                    })}
+                    className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] font-bold"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-[#5A6E64]">High Quality Surcharge (₱/job)</label>
+                  <input
+                    type="number"
+                    step="1"
+                    value={pricing.surcharges?.highQuality ?? 10}
+                    onChange={e => setPricing({
+                      ...pricing,
+                      surcharges: {
+                        ...pricing.surcharges,
+                        highQuality: parseFloat(e.target.value) || 0,
+                        backToBack: pricing.surcharges?.backToBack ?? 5,
+                        borderless: pricing.surcharges?.borderless ?? 5,
+                      }
+                    })}
+                    className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] font-bold"
+                  />
+                </div>
+              </div>
             </div>
 
             <button
@@ -796,16 +937,46 @@ export function AdminView({
                         {/* Files & Specs */}
                         <td className="py-3.5 px-4">
                           <div className="space-y-1 max-w-[240px]">
-                            {order.files.map((file, idx) => (
-                              <div key={file.id || idx} className="flex items-center justify-between gap-1 text-[11px]">
-                                <span className="truncate text-[#20352A] font-medium max-w-[150px]" title={file.fileName}>
-                                  {file.fileName}
-                                </span>
-                                <span className="text-[#5A6E64] shrink-0">
-                                  {file.pageCount}p • {file.paperSize} {file.printType.toUpperCase()}
-                                </span>
-                              </div>
-                            ))}
+                            {order.files.map((file, idx) => {
+                              const isBackToBack = file.duplex !== 'single';
+                              const isGlossy = file.paperType === 'glossy';
+                              return (
+                                <div key={file.id || idx} className="space-y-0.5 text-[11px] pb-1 border-b border-[#F0F3F0] last:border-0">
+                                  <div className="flex items-center justify-between gap-1">
+                                    <span className="truncate text-[#20352A] font-bold max-w-[140px]" title={file.fileName}>
+                                      {file.fileName}
+                                    </span>
+                                    <span className="text-[#23664B] font-semibold shrink-0">
+                                      ₱{file.subtotal.toFixed(2)}
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-wrap items-center gap-1 text-[10px] text-[#5A6E64]">
+                                    <span>{file.pageCount}p × {file.copies}</span>
+                                    <span>•</span>
+                                    <span className={isGlossy ? 'text-amber-800 font-bold' : ''}>
+                                      {isGlossy ? `Glossy (${file.photoPaperSize || file.paperSize})` : file.paperSize}
+                                    </span>
+                                    <span>•</span>
+                                    <span>{file.printType.toUpperCase()}</span>
+                                    {isBackToBack && (
+                                      <span className="px-1 py-0.2 rounded bg-emerald-50 text-emerald-800 font-semibold border border-emerald-200">
+                                        Back-to-Back
+                                      </span>
+                                    )}
+                                    {file.borderless && (
+                                      <span className="px-1 py-0.2 rounded bg-blue-50 text-blue-800 font-semibold border border-blue-200">
+                                        Borderless
+                                      </span>
+                                    )}
+                                    {file.quality === 'high' && (
+                                      <span className="px-1 py-0.2 rounded bg-purple-50 text-purple-800 font-semibold border border-purple-200">
+                                        High Qual
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
                             {/* Download Action Links */}
                             <div className="pt-1 flex items-center gap-2">
                               {order.files.length === 1 ? (
@@ -983,23 +1154,47 @@ export function AdminView({
               <span className="text-xs font-bold uppercase tracking-wider text-[#23664B]">
                 Documents ({selectedOrder.files.length})
               </span>
-              {selectedOrder.files.map((file, idx) => (
-                <div key={file.id || idx} className="p-3 rounded-xl border border-[#D4DDD5] flex items-center justify-between text-xs">
-                  <div>
-                    <p className="font-bold text-[#20352A]">{file.fileName}</p>
-                    <p className="text-[#5A6E64] mt-0.5">
-                      {file.pageCount} pgs • {file.copies} copies • {file.paperSize} • {file.printType.toUpperCase()} • {file.duplex}
-                    </p>
+              {selectedOrder.files.map((file, idx) => {
+                const isBackToBack = file.duplex !== 'single';
+                const isGlossy = file.paperType === 'glossy';
+                return (
+                  <div key={file.id || idx} className="p-3.5 rounded-xl border border-[#D4DDD5] flex items-start justify-between text-xs gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <p className="font-bold text-[#20352A]">{idx + 1}. {file.fileName}</p>
+                        {isGlossy && (
+                          <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold">
+                            Glossy Photo
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-[#5A6E64] flex flex-wrap items-center gap-1.5">
+                        <span>{file.pageCount} pgs × {file.copies} copies</span>
+                        <span>•</span>
+                        <span>{isGlossy ? `Photo: ${file.photoPaperSize || file.paperSize}` : `Paper: ${file.paperSize}`}</span>
+                        <span>•</span>
+                        <span>{file.printType === 'color' ? 'Full Color' : 'B&W'}</span>
+                        <span>•</span>
+                        <span className={isBackToBack ? 'font-semibold text-[#23664B]' : ''}>
+                          {isBackToBack ? 'Back-to-Back (+₱5)' : 'Single-Sided'}
+                        </span>
+                        {file.borderless && <span>• Borderless (+₱5)</span>}
+                        {file.quality === 'high' && <span>• High Quality (+₱10)</span>}
+                      </div>
+                      <p className="text-[11px] font-extrabold text-[#23664B]">
+                        Subtotal: ₱{file.subtotal.toFixed(2)}
+                      </p>
+                    </div>
+                    <a
+                      href={`/api/orders/${selectedOrder.id}/files/${file.id}`}
+                      download={file.fileName}
+                      className="px-2.5 py-1.5 rounded-lg bg-[#eef4f1] text-[#23664B] font-semibold text-[11px] hover:bg-[#d6e6df] shrink-0"
+                    >
+                      Download
+                    </a>
                   </div>
-                  <a
-                    href={`/api/orders/${selectedOrder.id}/files/${file.id}`}
-                    download={file.fileName}
-                    className="px-2.5 py-1 rounded-lg bg-[#eef4f1] text-[#23664B] font-semibold text-[11px] hover:bg-[#d6e6df]"
-                  >
-                    Download
-                  </a>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Audit History Log */}

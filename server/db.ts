@@ -6,7 +6,8 @@ import { PrintOrder, OrderFile, OrderStatus, PricingSettings, ShopLocation, Trus
 import { DEFAULT_PRICING, MAXIN_SHOP, INITIAL_ORDERS } from '../src/data/mockData';
 import { hashPassword, verifyPassword } from './auth';
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const DATA_DIR = isServerless ? path.resolve('/tmp', 'printdrop_data') : path.resolve(process.cwd(), 'data');
 const UPLOADS_DIR = path.resolve(DATA_DIR, 'uploads');
 const DB_FILE = path.resolve(DATA_DIR, 'printdrop_db.json');
 
@@ -216,6 +217,7 @@ async function initNeonSchema(): Promise<void> {
         customer_name VARCHAR(128) NOT NULL,
         customer_phone VARCHAR(64),
         customer_email VARCHAR(128),
+        client_request_id VARCHAR(128),
         binding VARCHAR(32) NOT NULL DEFAULT 'none',
         instructions TEXT,
         status VARCHAR(32) NOT NULL DEFAULT 'waiting',
@@ -237,9 +239,17 @@ async function initNeonSchema(): Promise<void> {
         page_count INT NOT NULL DEFAULT 1,
         copies INT NOT NULL DEFAULT 1,
         paper_size VARCHAR(32) NOT NULL DEFAULT 'A4',
+        paper_type VARCHAR(32) NOT NULL DEFAULT 'ordinary',
+        photo_paper_size VARCHAR(32),
         print_type VARCHAR(32) NOT NULL DEFAULT 'bw',
         orientation VARCHAR(32) NOT NULL DEFAULT 'portrait',
         duplex VARCHAR(32) NOT NULL DEFAULT 'single',
+        borderless BOOLEAN NOT NULL DEFAULT FALSE,
+        quality VARCHAR(32) NOT NULL DEFAULT 'standard',
+        base_cost NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+        back_to_back_surcharge NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+        borderless_surcharge NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+        quality_surcharge NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
         subtotal NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
         disk_path TEXT,
         telegram_status VARCHAR(32) NOT NULL DEFAULT 'pending',
@@ -284,6 +294,17 @@ async function initNeonSchema(): Promise<void> {
         counter_date VARCHAR(32) PRIMARY KEY,
         current_number INT NOT NULL DEFAULT 1045
       );
+
+      -- Migrations for existing deployments:
+      ALTER TABLE printdrop_orders ADD COLUMN IF NOT EXISTS client_request_id VARCHAR(128);
+      ALTER TABLE printdrop_order_files ADD COLUMN IF NOT EXISTS paper_type VARCHAR(32) NOT NULL DEFAULT 'ordinary';
+      ALTER TABLE printdrop_order_files ADD COLUMN IF NOT EXISTS photo_paper_size VARCHAR(32);
+      ALTER TABLE printdrop_order_files ADD COLUMN IF NOT EXISTS borderless BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE printdrop_order_files ADD COLUMN IF NOT EXISTS quality VARCHAR(32) NOT NULL DEFAULT 'standard';
+      ALTER TABLE printdrop_order_files ADD COLUMN IF NOT EXISTS base_cost NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
+      ALTER TABLE printdrop_order_files ADD COLUMN IF NOT EXISTS back_to_back_surcharge NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
+      ALTER TABLE printdrop_order_files ADD COLUMN IF NOT EXISTS borderless_surcharge NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
+      ALTER TABLE printdrop_order_files ADD COLUMN IF NOT EXISTS quality_surcharge NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
     `);
 
     // Seed default admin if missing
@@ -406,6 +427,7 @@ export async function fetchAllOrders(filter?: {
         queueNumber: row.queue_number,
         trackingToken: row.tracking_token,
         shopId: row.shop_id,
+        clientRequestId: row.client_request_id || undefined,
         customerName: row.customer_name,
         customerPhone: row.customer_phone || undefined,
         customerEmail: row.customer_email || undefined,
@@ -426,9 +448,19 @@ export async function fetchAllOrders(filter?: {
           pageCount: f.page_count,
           copies: f.copies,
           paperSize: f.paper_size,
+          paperType: f.paper_type || 'ordinary',
+          photoPaperSize: f.photo_paper_size || undefined,
           printType: f.print_type,
           orientation: f.orientation,
-          duplex: f.duplex,
+          duplex: f.duplex || 'single',
+          borderless: Boolean(f.borderless),
+          quality: f.quality || 'standard',
+          baseCost: f.base_cost != null ? parseFloat(f.base_cost) : parseFloat(f.subtotal),
+          surcharges: {
+            backToBack: f.back_to_back_surcharge != null ? parseFloat(f.back_to_back_surcharge) : 0,
+            borderless: f.borderless_surcharge != null ? parseFloat(f.borderless_surcharge) : 0,
+            quality: f.quality_surcharge != null ? parseFloat(f.quality_surcharge) : 0,
+          },
           subtotal: parseFloat(f.subtotal),
           diskPath: f.disk_path || undefined,
           telegramStatus: f.telegram_status,
@@ -493,6 +525,7 @@ export async function fetchOrderById(id: string): Promise<PrintOrder | null> {
           queueNumber: row.queue_number,
           trackingToken: row.tracking_token,
           shopId: row.shop_id,
+          clientRequestId: row.client_request_id || undefined,
           customerName: row.customer_name,
           customerPhone: row.customer_phone || undefined,
           customerEmail: row.customer_email || undefined,
@@ -513,9 +546,19 @@ export async function fetchOrderById(id: string): Promise<PrintOrder | null> {
             pageCount: f.page_count,
             copies: f.copies,
             paperSize: f.paper_size,
+            paperType: f.paper_type || 'ordinary',
+            photoPaperSize: f.photo_paper_size || undefined,
             printType: f.print_type,
             orientation: f.orientation,
-            duplex: f.duplex,
+            duplex: f.duplex || 'single',
+            borderless: Boolean(f.borderless),
+            quality: f.quality || 'standard',
+            baseCost: f.base_cost != null ? parseFloat(f.base_cost) : parseFloat(f.subtotal),
+            surcharges: {
+              backToBack: f.back_to_back_surcharge != null ? parseFloat(f.back_to_back_surcharge) : 0,
+              borderless: f.borderless_surcharge != null ? parseFloat(f.borderless_surcharge) : 0,
+              quality: f.quality_surcharge != null ? parseFloat(f.quality_surcharge) : 0,
+            },
             subtotal: parseFloat(f.subtotal),
             diskPath: f.disk_path || undefined,
             telegramStatus: f.telegram_status,
@@ -548,6 +591,28 @@ export async function fetchOrderById(id: string): Promise<PrintOrder | null> {
   return found || null;
 }
 
+export async function fetchOrderByClientRequestId(clientRequestId: string): Promise<PrintOrder | null> {
+  if (!clientRequestId) return null;
+  const pool = getPgPool();
+  if (pool) {
+    try {
+      const res = await pool.query(
+        'SELECT id FROM printdrop_orders WHERE client_request_id = $1 LIMIT 1',
+        [clientRequestId]
+      );
+      if (res.rows.length > 0) {
+        return fetchOrderById(res.rows[0].id);
+      }
+    } catch (err) {
+      console.warn('[DB] Error checking client_request_id in Neon:', err);
+    }
+  }
+
+  const db = getDatabase();
+  const found = db.orders.find(o => o.clientRequestId === clientRequestId);
+  return found || null;
+}
+
 export async function insertOrder(order: PrintOrder): Promise<void> {
   const pool = getPgPool();
   if (pool) {
@@ -555,12 +620,13 @@ export async function insertOrder(order: PrintOrder): Promise<void> {
       await pool.query(
         `INSERT INTO printdrop_orders (
           id, queue_number, tracking_token, shop_id, customer_name, customer_phone, customer_email,
-          binding, instructions, status, status_message, total_price, telegram_status, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+          client_request_id, binding, instructions, status, status_message, total_price, telegram_status, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
         [
           order.id, order.queueNumber, order.trackingToken, order.shopId || 'maxin-printing-service',
-          order.customerName, order.customerPhone, order.customerEmail, order.binding, order.instructions,
-          order.status, order.statusMessage, order.totalPrice, order.telegramStatus, order.createdAt, order.updatedAt,
+          order.customerName, order.customerPhone, order.customerEmail, order.clientRequestId || null,
+          order.binding, order.instructions, order.status, order.statusMessage, order.totalPrice,
+          order.telegramStatus, order.createdAt, order.updatedAt,
         ]
       );
 
@@ -568,11 +634,17 @@ export async function insertOrder(order: PrintOrder): Promise<void> {
         await pool.query(
           `INSERT INTO printdrop_order_files (
             id, order_id, file_name, file_size, file_type, page_count, copies, paper_size,
-            print_type, orientation, duplex, subtotal, disk_path, telegram_status, telegram_file_id, is_deleted_from_disk
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+            paper_type, photo_paper_size, print_type, orientation, duplex, borderless, quality,
+            base_cost, back_to_back_surcharge, borderless_surcharge, quality_surcharge, subtotal,
+            disk_path, telegram_status, telegram_file_id, is_deleted_from_disk
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
           [
             f.id, order.id, f.fileName, f.fileSize, f.fileType, f.pageCount, f.copies, f.paperSize,
-            f.printType, f.orientation, f.duplex, f.subtotal, f.diskPath, f.telegramStatus, f.telegramFileId, f.isDeletedFromDisk,
+            f.paperType || 'ordinary', f.photoPaperSize || null, f.printType, f.orientation,
+            f.duplex, Boolean(f.borderless), f.quality || 'standard',
+            f.baseCost ?? f.subtotal, f.surcharges?.backToBack ?? 0, f.surcharges?.borderless ?? 0,
+            f.surcharges?.quality ?? 0, f.subtotal,
+            f.diskPath, f.telegramStatus, f.telegramFileId, f.isDeletedFromDisk,
           ]
         );
       }

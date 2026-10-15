@@ -9,7 +9,25 @@ export const DEFAULT_PRICING: PricingSettings = {
     Legal: { bw: 7, color: 10 },
     A3: { bw: 12, color: 20 },
   },
-  duplexDiscountPercent: 10,
+  photoPaperPrices: {
+    glossy: { bw: 25, color: 35 },
+  },
+  photoPaperSizes: [
+    { id: '4x6', label: '4 × 6 inches (4R)', dimensions: '4 × 6 in', enabled: true },
+    { id: '5x7', label: '5 × 7 inches (5R)', dimensions: '5 × 7 in', enabled: true },
+    { id: 'A4', label: 'A4 Photo (8.3 × 11.7 in)', dimensions: '8.27 × 11.69 in', enabled: true },
+  ],
+  surcharges: {
+    backToBack: 5,   // +₱5 per document printing job
+    borderless: 5,   // +₱5 per document printing job
+    highQuality: 10, // +₱10 per document printing job
+  },
+  optionsConfig: {
+    allowBorderlessOnOrdinary: true,
+    allowBorderlessOnGlossy: true,
+    allowBackToBackOnGlossy: false,
+    allowHighQuality: true,
+  },
   bindingPrices: {
     none: 0,
     staple: 5,
@@ -50,10 +68,15 @@ export const INITIAL_ORDERS: PrintOrder[] = [
         pageCount: 12,
         copies: 2,
         paperSize: 'A4',
+        paperType: 'ordinary',
         printType: 'bw',
         orientation: 'portrait',
-        duplex: 'double_long',
-        subtotal: 108.00,
+        duplex: 'back_to_back',
+        borderless: false,
+        quality: 'standard',
+        baseCost: 120.00,
+        surcharges: { backToBack: 5.00, borderless: 0.00, quality: 0.00 },
+        subtotal: 125.00,
         telegramStatus: 'delivered',
         isDeletedFromDisk: true,
       },
@@ -65,10 +88,15 @@ export const INITIAL_ORDERS: PrintOrder[] = [
         pageCount: 1,
         copies: 2,
         paperSize: 'A3',
+        paperType: 'ordinary',
         printType: 'color',
         orientation: 'landscape',
         duplex: 'single',
-        subtotal: 40.00,
+        borderless: true,
+        quality: 'high',
+        baseCost: 40.00,
+        surcharges: { backToBack: 0.00, borderless: 5.00, quality: 10.00 },
+        subtotal: 55.00,
         telegramStatus: 'delivered',
         isDeletedFromDisk: true,
       },
@@ -83,7 +111,7 @@ export const INITIAL_ORDERS: PrintOrder[] = [
     ],
     createdAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
     updatedAt: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
-    totalPrice: 153.00,
+    totalPrice: 185.00,
     telegramStatus: 'delivered',
     isDemo: true,
   },
@@ -104,9 +132,14 @@ export const INITIAL_ORDERS: PrintOrder[] = [
         pageCount: 4,
         copies: 3,
         paperSize: 'Legal',
+        paperType: 'ordinary',
         printType: 'bw',
         orientation: 'portrait',
         duplex: 'single',
+        borderless: false,
+        quality: 'standard',
+        baseCost: 84.00,
+        surcharges: { backToBack: 0.00, borderless: 0.00, quality: 0.00 },
         subtotal: 84.00,
         telegramStatus: 'delivered',
         isDeletedFromDisk: true,
@@ -143,10 +176,15 @@ export const INITIAL_ORDERS: PrintOrder[] = [
         pageCount: 8,
         copies: 5,
         paperSize: 'Letter',
+        paperType: 'ordinary',
         printType: 'color',
         orientation: 'portrait',
-        duplex: 'double_long',
-        subtotal: 216.00,
+        duplex: 'back_to_back',
+        borderless: false,
+        quality: 'high',
+        baseCost: 240.00,
+        surcharges: { backToBack: 5.00, borderless: 0.00, quality: 10.00 },
+        subtotal: 255.00,
         telegramStatus: 'delivered',
         isDeletedFromDisk: true,
       },
@@ -164,46 +202,109 @@ export const INITIAL_ORDERS: PrintOrder[] = [
     createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
     updatedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
     completedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
-    totalPrice: 221.00,
+    totalPrice: 260.00,
     telegramStatus: 'delivered',
     isDemo: true,
   },
 ];
 
-export function calculateFileSubtotal(params: {
+export interface FileCalculationParams {
   pages: number;
   copies: number;
-  paperSize: string;
-  printType: string;
-  duplex: string;
+  paperSize?: string;
+  paperType?: string;       // 'ordinary' | 'glossy'
+  photoPaperSize?: string;  // '4x6' | '5x7' | 'A4'
+  printType: string;        // 'bw' | 'color'
+  duplex?: string;          // 'single' | 'back_to_back' | 'double_long' | 'double_short'
+  borderless?: boolean;     // true | false
+  quality?: string;         // 'standard' | 'high'
   pricing?: PricingSettings;
-}): number {
-  const pages = Math.max(1, params.pages);
-  const copies = Math.max(1, params.copies);
+}
+
+export interface FilePricingBreakdown {
+  baseRatePerUnit: number;
+  chargeableUnits: number;
+  baseCost: number;
+  surcharges: {
+    backToBack: number;
+    borderless: number;
+    quality: number;
+  };
+  totalSurcharges: number;
+  subtotal: number;
+}
+
+/**
+ * Authoritative itemized calculation for an uploaded document/photo.
+ * Formula defined in Section 6 of requirements:
+ * - Ordinary paper: base rate * chargeable pages * copies + applicable surcharges
+ * - Glossy photo paper: photo paper rate * chargeable sheets * copies + applicable surcharges
+ * Surcharges (applied once per document printing job):
+ * - Back-to-Back: +₱5
+ * - Borderless Printing: +₱5
+ * - High Quality: +₱10
+ */
+export function calculateFilePricingBreakdown(params: FileCalculationParams): FilePricingBreakdown {
+  const pages = Math.max(1, Math.round(Number(params.pages) || 1));
+  const copies = Math.max(1, Math.round(Number(params.copies) || 1));
   const pricing = params.pricing || DEFAULT_PRICING;
+  const isColor = params.printType === 'color';
+  const isGlossy = params.paperType === 'glossy';
 
-  const sizeKey = (params.paperSize in pricing.pagePrices ? params.paperSize : 'A4') as keyof typeof pricing.pagePrices;
-  const rates = pricing.pagePrices[sizeKey] || pricing.pagePrices.A4;
-  let perPageRate = params.printType === 'color' ? rates.color : rates.bw;
+  let baseRatePerUnit = 0;
+  let chargeableUnits = 0;
+  let baseCost = 0;
 
-  // Duplex discount if double-sided
-  if (params.duplex !== 'single') {
-    const discount = (pricing.duplexDiscountPercent || 10) / 100;
-    perPageRate = perPageRate * (1 - discount);
+  if (isGlossy) {
+    // Photo Paper — Glossy rates (Default: B&W ₱25/sheet, Color ₱35/sheet)
+    const glossyRates = pricing.photoPaperPrices?.glossy || DEFAULT_PRICING.photoPaperPrices.glossy;
+    baseRatePerUnit = isColor ? glossyRates.color : glossyRates.bw;
+    // Each photo/page represents physical photo sheets
+    chargeableUnits = pages;
+    baseCost = Math.round(baseRatePerUnit * 100 * chargeableUnits * copies) / 100;
+  } else {
+    // Ordinary paper rates (Letter: 3/6, A4: 5/8, Legal: 7/10, A3: 12/20)
+    const sizeKey = (params.paperSize && params.paperSize in pricing.pagePrices 
+      ? params.paperSize 
+      : 'A4') as keyof typeof pricing.pagePrices;
+    const rates = pricing.pagePrices[sizeKey] || pricing.pagePrices.A4;
+    baseRatePerUnit = isColor ? rates.color : rates.bw;
+    chargeableUnits = pages;
+    baseCost = Math.round(baseRatePerUnit * 100 * chargeableUnits * copies) / 100;
   }
 
-  const subtotal = perPageRate * pages * copies;
-  return Number(subtotal.toFixed(2));
+  // Calculate Surcharges (applied once per document job)
+  const isBackToBack = params.duplex === 'back_to_back' || params.duplex === 'double_long' || params.duplex === 'double_short';
+  const isBorderless = Boolean(params.borderless);
+  const isHighQuality = params.quality === 'high';
+
+  const backToBackFee = isBackToBack ? (pricing.surcharges?.backToBack ?? 5) : 0;
+  const borderlessFee = isBorderless ? (pricing.surcharges?.borderless ?? 5) : 0;
+  const qualityFee = isHighQuality ? (pricing.surcharges?.highQuality ?? 10) : 0;
+
+  const totalSurcharges = Math.round((backToBackFee + borderlessFee + qualityFee) * 100) / 100;
+  const subtotal = Math.round((baseCost + totalSurcharges) * 100) / 100;
+
+  return {
+    baseRatePerUnit,
+    chargeableUnits,
+    baseCost,
+    surcharges: {
+      backToBack: backToBackFee,
+      borderless: borderlessFee,
+      quality: qualityFee,
+    },
+    totalSurcharges,
+    subtotal,
+  };
+}
+
+export function calculateFileSubtotal(params: FileCalculationParams): number {
+  return calculateFilePricingBreakdown(params).subtotal;
 }
 
 export function calculateOrderPrice(params: {
-  files: Array<{
-    pages: number;
-    copies: number;
-    paperSize: string;
-    printType: string;
-    duplex: string;
-  }>;
+  files: Array<FileCalculationParams>;
   binding: string;
   pricing?: PricingSettings;
 }): number {
@@ -211,17 +312,15 @@ export function calculateOrderPrice(params: {
   let filesTotal = 0;
 
   for (const f of params.files) {
-    filesTotal += calculateFileSubtotal({
-      ...f,
-      pricing,
-    });
+    const breakdown = calculateFilePricingBreakdown({ ...f, pricing });
+    filesTotal += breakdown.subtotal;
   }
 
   const bindingKey = (params.binding in pricing.bindingPrices ? params.binding : 'none') as keyof typeof pricing.bindingPrices;
   const bindingFee = pricing.bindingPrices[bindingKey] || 0;
 
-  const total = filesTotal + bindingFee;
-  return Number(total.toFixed(2));
+  const total = Math.round((filesTotal + bindingFee) * 100) / 100;
+  return total;
 }
 
 export function formatBytes(bytes: number, decimals = 1): string {

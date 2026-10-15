@@ -23,6 +23,33 @@ function getAuthHeaders(): HeadersInit {
   };
 }
 
+async function parseJsonResponse<T = any>(res: Response): Promise<T> {
+  const text = await res.text();
+  let json: any = null;
+  try {
+    json = JSON.parse(text);
+  } catch (_e) {
+    // If the serverless host returned HTML/plain text (e.g. Vercel 500, 504, 413, 502)
+    if (res.status === 413) {
+      throw new Error('Upload size exceeds the serverless payload limit (4.5MB). Please compress large photos or upload documents separately.');
+    }
+    if (res.status === 504 || res.status === 502) {
+      throw new Error('Server request timed out. Please check your internet connection and try again.');
+    }
+    if (!res.ok) {
+      throw new Error(`Server returned error (${res.status}). Please try again or contact Maxin counter staff.`);
+    }
+    throw new Error('Server returned an unexpected response format.');
+  }
+
+  if (!res.ok) {
+    const errorMsg = json?.error?.message || json?.error || `Request failed with status ${res.status}`;
+    throw new Error(errorMsg);
+  }
+
+  return json as T;
+}
+
 export async function fetchSettings(): Promise<{
   pricing: PricingSettings;
   shops: ShopLocation[];
@@ -31,7 +58,7 @@ export async function fetchSettings(): Promise<{
   try {
     const res = await fetch('/api/settings');
     if (res.ok) {
-      return await res.json();
+      return await parseJsonResponse(res);
     }
   } catch (e) {
     console.warn('[API] Could not fetch settings from server, using defaults:', e);
@@ -48,6 +75,7 @@ export async function submitOrder(payload: {
   customerPhone?: string;
   customerEmail?: string;
   shopId: string;
+  clientRequestId?: string;
   binding: string;
   instructions?: string;
   files: Array<{
@@ -57,23 +85,30 @@ export async function submitOrder(payload: {
     fileData?: string;
     pageCount: number;
     copies: number;
-    paperSize: string;
+    paperSize?: string;
+    paperType?: string;
+    photoPaperSize?: string;
     printType: string;
     orientation: string;
     duplex: string;
+    borderless?: boolean;
+    quality?: string;
   }>;
-}): Promise<{ success: boolean; order: PrintOrder; error?: string }> {
+}): Promise<{ 
+  success: boolean; 
+  orderId?: string; 
+  queueNumber?: string; 
+  trackingUrl?: string; 
+  order: PrintOrder; 
+  error?: string 
+}> {
   const res = await fetch('/api/orders', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
 
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to submit order');
-  }
-  return data;
+  return await parseJsonResponse(res);
 }
 
 export async function trackOrder(
@@ -86,11 +121,7 @@ export async function trackOrder(
   if (phone) params.set('phone', phone);
 
   const res = await fetch(`/api/orders/track?${params.toString()}`);
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Order not found');
-  }
-  return data;
+  return await parseJsonResponse(res);
 }
 
 const DEVICE_ID_KEY = 'printdrop_device_id';
@@ -143,10 +174,7 @@ export async function adminLogin(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password, deviceId, deviceName }),
   });
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Login failed');
-  }
+  const data = await parseJsonResponse(res);
   if (data.token) {
     setAdminToken(data.token);
   }
@@ -167,7 +195,7 @@ export async function pollDeviceApprovalStatus(
   if (deviceId) params.set('deviceId', deviceId);
 
   const res = await fetch(`/api/admin/device-approval/status?${params.toString()}`);
-  const data = await res.json();
+  const data = await parseJsonResponse(res);
   if (data.token) {
     setAdminToken(data.token);
   }
@@ -178,7 +206,7 @@ export async function fetchAuthorizedDevices(): Promise<any[]> {
   const res = await fetch('/api/admin/devices', {
     headers: getAuthHeaders(),
   });
-  const data = await res.json();
+  const data = await parseJsonResponse(res);
   return data.devices || [];
 }
 
@@ -188,10 +216,7 @@ export async function approveDeviceApi(deviceId: string): Promise<void> {
     headers: getAuthHeaders(),
     body: JSON.stringify({ deviceId }),
   });
-  if (!res.ok) {
-    const data = await res.json();
-    throw new Error(data.error || 'Failed to approve device');
-  }
+  await parseJsonResponse(res);
 }
 
 export async function revokeDeviceApi(deviceId: string): Promise<void> {
@@ -200,10 +225,7 @@ export async function revokeDeviceApi(deviceId: string): Promise<void> {
     headers: getAuthHeaders(),
     body: JSON.stringify({ deviceId }),
   });
-  if (!res.ok) {
-    const data = await res.json();
-    throw new Error(data.error || 'Failed to revoke device');
-  }
+  await parseJsonResponse(res);
 }
 
 export async function recoverDeviceApi(masterKey: string): Promise<{ success: boolean; token: string }> {
@@ -215,10 +237,7 @@ export async function recoverDeviceApi(masterKey: string): Promise<{ success: bo
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ masterKey, deviceId, deviceName }),
   });
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Recovery failed. Invalid master key.');
-  }
+  const data = await parseJsonResponse(res);
   if (data.token) {
     setAdminToken(data.token);
   }
@@ -271,11 +290,7 @@ export async function getAdminOrders(params: {
   const res = await fetch(`/api/admin/orders?${query.toString()}`, {
     headers: getAuthHeaders(),
   });
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to fetch admin orders');
-  }
-  return data;
+  return await parseJsonResponse(res);
 }
 
 export async function updateOrderStatusApi(
@@ -288,10 +303,7 @@ export async function updateOrderStatusApi(
     headers: getAuthHeaders(),
     body: JSON.stringify({ status, note }),
   });
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error || 'Failed to update order status');
-  }
+  const data = await parseJsonResponse(res);
   return data.order;
 }
 
@@ -300,7 +312,7 @@ export async function retryTelegramDelivery(orderId: string): Promise<any> {
     method: 'POST',
     headers: getAuthHeaders(),
   });
-  return await res.json();
+  return await parseJsonResponse(res);
 }
 
 export async function deleteOrderApi(orderId: string): Promise<void> {
@@ -308,20 +320,14 @@ export async function deleteOrderApi(orderId: string): Promise<void> {
     method: 'DELETE',
     headers: getAuthHeaders(),
   });
-  if (!res.ok) {
-    const data = await res.json();
-    throw new Error(data.error || 'Failed to delete order');
-  }
+  await parseJsonResponse(res);
 }
 
 export async function getAdminStats(): Promise<OrderStats> {
   const res = await fetch('/api/admin/stats', {
     headers: getAuthHeaders(),
   });
-  if (!res.ok) {
-    throw new Error('Failed to fetch stats');
-  }
-  return await res.json();
+  return await parseJsonResponse(res);
 }
 
 export async function updateSettingsApi(payload: {
@@ -333,7 +339,7 @@ export async function updateSettingsApi(payload: {
     headers: getAuthHeaders(),
     body: JSON.stringify(payload),
   });
-  return await res.json();
+  return await parseJsonResponse(res);
 }
 
 export async function getTelegramStatusApi(): Promise<{

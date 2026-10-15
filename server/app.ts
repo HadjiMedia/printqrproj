@@ -16,8 +16,8 @@ initDatabase().catch(err => {
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Health Check Endpoint
-app.get('/api/health', (_req, res) => {
+// Health Check Endpoints (both /api/health and /health)
+app.get(['/api/health', '/health'], (_req, res) => {
   res.json({
     status: 'ok',
     environment: process.env.NODE_ENV || 'production',
@@ -26,7 +26,35 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-// Mount Public & Protected API Router
+// Mount Public & Protected API Router on both '/api' and '/'
+// This ensures compatibility with direct Vite dev server, Express production,
+// and Vercel serverless rewrites regardless of whether '/api' prefix is stripped.
 app.use('/api', apiRouter);
+app.use('/', apiRouter);
+
+// Global JSON 404 Handler for API requests
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: {
+      code: 'NOT_FOUND',
+      message: `API endpoint ${req.method} ${req.originalUrl || req.url} not found.`,
+    },
+  });
+});
+
+// Global JSON Error Handler (Prevents any HTML/plain text error leakage to frontend)
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[API] Server error caught:', err);
+  const statusCode = typeof err?.status === 'number' && err.status >= 400 && err.status < 600 ? err.status : 500;
+  
+  res.status(statusCode).json({
+    success: false,
+    error: {
+      code: err?.code || (statusCode === 400 ? 'INVALID_REQUEST' : 'SERVER_ERROR'),
+      message: err?.message || 'A server error occurred processing your request. Please try again.',
+    },
+  });
+});
 
 export default app;

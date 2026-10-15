@@ -22,9 +22,10 @@ import {
   getDeviceByDeviceId,
   registerOrRequestDevice,
   approveDevice,
-  revokeDevice
+  revokeDevice,
+  fetchOrderByClientRequestId
 } from './db';
-import { calculateFileSubtotal, calculateOrderPrice } from '../src/data/mockData';
+import { calculateFileSubtotal, calculateOrderPrice, calculateFilePricingBreakdown } from '../src/data/mockData';
 import { PrintOrder, OrderFile, OrderStatus, PricingSettings } from '../src/types/print';
 import { dispatchOrderToTelegram, testTelegramConnection, isTelegramConfigured, downloadFileFromTelegram } from './telegram';
 import { createZipArchive } from './zip';
@@ -66,23 +67,64 @@ router.get('/settings', (_req: Request, res: Response) => {
 // 2. Submit New Print Order
 router.post('/orders', async (req: Request, res: Response) => {
   try {
-    const { customerName, customerPhone, customerEmail, shopId, files, binding, instructions } = req.body;
+    const { 
+      customerName, 
+      customerPhone, 
+      customerEmail, 
+      shopId, 
+      files, 
+      binding, 
+      instructions, 
+      clientRequestId 
+    } = req.body;
+
+    // Idempotency Check: Prevent duplicate orders on network retry or double-click
+    if (clientRequestId && typeof clientRequestId === 'string' && clientRequestId.trim()) {
+      const existingOrder = await fetchOrderByClientRequestId(clientRequestId.trim());
+      if (existingOrder) {
+        return res.status(200).json({
+          success: true,
+          orderId: existingOrder.id,
+          queueNumber: existingOrder.queueNumber,
+          trackingUrl: `/?tab=track&q=${existingOrder.id}&token=${existingOrder.trackingToken}`,
+          order: existingOrder,
+        });
+      }
+    }
 
     if (!customerName || typeof customerName !== 'string' || !customerName.trim()) {
-      return res.status(400).json({ error: 'Customer name is required.' });
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Customer name is required.',
+        },
+      });
     }
 
     const targetShopId = 'maxin-printing-service';
 
     if (!Array.isArray(files) || files.length === 0) {
-      return res.status(400).json({ error: 'At least one document or photo must be uploaded.' });
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'NO_FILES_UPLOADED',
+          message: 'At least one document or photo must be uploaded.',
+        },
+      });
     }
 
     const db = getDatabase();
     const shop = db.shops[0] || { name: 'Maxin Printing Service', acceptingOrders: true };
 
     if (!shop.acceptingOrders) {
-      return res.status(403).json({ error: 'Maxin Printing Service is currently paused and not accepting new orders.' });
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'SHOP_PAUSED',
+          message: 'Maxin Printing Service is currently paused and not accepting new orders.',
+        },
+      });
     }
 
     const uploadsDir = getUploadsDir();
@@ -97,7 +139,7 @@ router.post('/orders', async (req: Request, res: Response) => {
 
       let fileSize = Number(f.fileSize) || 0;
 
-      // Save base64 payload to temporary disk file
+      // Save base64 payload to temporary disk file (failsafe on serverless /tmp)
       if (f.fileData && typeof f.fileData === 'string' && f.fileData.startsWith('data:')) {
         const base64Content = f.fileData.split(',')[1];
         if (base64Content) {
@@ -113,17 +155,32 @@ router.post('/orders', async (req: Request, res: Response) => {
 
       const pageCount = Math.max(1, parseInt(f.pageCount) || 1);
       const copies = Math.max(1, parseInt(f.copies) || 1);
-      const paperSize = ['Letter', 'A4', 'Legal', 'A3'].includes(f.paperSize) ? f.paperSize : 'A4';
+      const isGlossy = f.paperType === 'glossy';
+      const paperType = isGlossy ? 'glossy' : 'ordinary';
+      const photoPaperSize = isGlossy ? (f.photoPaperSize || '4x6') : undefined;
+      const paperSize = isGlossy 
+        ? (['4x6', '5x7', 'A4'].includes(photoPaperSize || '') ? photoPaperSize as any : '4x6') 
+        : (['Letter', 'A4', 'Legal', 'A3'].includes(f.paperSize) ? f.paperSize : 'A4');
       const printType = f.printType === 'color' ? 'color' : 'bw';
       const orientation = f.orientation === 'landscape' ? 'landscape' : 'portrait';
-      const duplex = ['double_long', 'double_short'].includes(f.duplex) ? f.duplex : 'single';
+      
+      // Standardize Back-to-Back (treat back_to_back, double_long, double_short as duplex)
+      const isDuplex = f.duplex === 'back_to_back' || f.duplex === 'double_long' || f.duplex === 'double_short';
+      const duplex = isDuplex ? 'back_to_back' : 'single';
+      const borderless = Boolean(f.borderless);
+      const quality = f.quality === 'high' ? 'high' : 'standard';
 
-      const subtotal = calculateFileSubtotal({
+      // Authoritative Centralized Pricing Breakdown
+      const breakdown = calculateFilePricingBreakdown({
         pages: pageCount,
         copies,
         paperSize,
+        paperType,
+        photoPaperSize,
         printType,
         duplex,
+        borderless,
+        quality,
         pricing: db.pricing,
       });
 
@@ -136,10 +193,16 @@ router.post('/orders', async (req: Request, res: Response) => {
         pageCount,
         copies,
         paperSize,
+        paperType,
+        photoPaperSize,
         printType,
         orientation,
         duplex,
-        subtotal,
+        borderless,
+        quality,
+        baseCost: breakdown.baseCost,
+        surcharges: breakdown.surcharges,
+        subtotal: breakdown.subtotal,
         telegramStatus: isTelegramConfigured() ? 'pending' : 'not_configured',
         isDeletedFromDisk: false,
         diskPath,
@@ -148,14 +211,18 @@ router.post('/orders', async (req: Request, res: Response) => {
 
     const validBinding = ['none', 'staple', 'spiral', 'booklet'].includes(binding) ? binding : 'none';
 
-    // Calculate total on server
+    // Calculate total on server using authoritative breakdown sums
     const totalPrice = calculateOrderPrice({
       files: processedFiles.map(pf => ({
         pages: pf.pageCount,
         copies: pf.copies,
         paperSize: pf.paperSize,
+        paperType: pf.paperType,
+        photoPaperSize: pf.photoPaperSize,
         printType: pf.printType,
         duplex: pf.duplex,
+        borderless: pf.borderless,
+        quality: pf.quality,
       })),
       binding: validBinding,
       pricing: db.pricing,
@@ -171,6 +238,7 @@ router.post('/orders', async (req: Request, res: Response) => {
       queueNumber,
       trackingToken,
       shopId: targetShopId,
+      clientRequestId: clientRequestId ? String(clientRequestId).trim() : undefined,
       customerName: customerName.trim(),
       customerPhone: customerPhone ? String(customerPhone).trim() : undefined,
       customerEmail: customerEmail ? String(customerEmail).trim() : undefined,
@@ -198,19 +266,24 @@ router.post('/orders', async (req: Request, res: Response) => {
     await insertOrder(newOrder);
     logAudit('customer', 'ORDER_CREATED', `Order ${orderId} (Ticket #${queueNumber}) created with ${processedFiles.length} file(s). Total: ₱${totalPrice.toFixed(2)}`);
 
-    // In serverless environments, deliver to Telegram before request finishes
+    // In serverless environments, deliver to Telegram with a safe 6s timeout so execution never hangs
     if (isTelegramConfigured()) {
       try {
-        // Attach memory payload to order before dispatch
         const dispatchableOrder = {
           ...newOrder,
           files: processedFiles,
         };
-        const deliveryResult = await dispatchOrderToTelegram(dispatchableOrder);
+        const timeoutPromise = new Promise<{ overallStatus: 'pending'; error?: string; deliveredFiles: number; totalFiles: number }>((_, reject) =>
+          setTimeout(() => reject(new Error('Telegram notification timeout')), 6000)
+        );
+        const deliveryResult = await Promise.race([
+          dispatchOrderToTelegram(dispatchableOrder),
+          timeoutPromise,
+        ]);
         newOrder.telegramStatus = deliveryResult.overallStatus;
         newOrder.telegramDeliveryError = deliveryResult.error;
       } catch (err: any) {
-        console.error(`[Telegram] Delivery error for ${orderId}:`, err);
+        console.warn(`[Telegram] Delivery deferred or timed out for ${orderId}:`, err?.message || err);
         newOrder.telegramStatus = 'failed';
         newOrder.telegramDeliveryError = err?.message || String(err);
       }
@@ -218,11 +291,20 @@ router.post('/orders', async (req: Request, res: Response) => {
 
     res.status(201).json({
       success: true,
+      orderId: newOrder.id,
+      queueNumber: newOrder.queueNumber,
+      trackingUrl: `/?tab=track&q=${newOrder.id}&token=${newOrder.trackingToken}`,
       order: newOrder,
     });
   } catch (err: any) {
     console.error('[API] Error creating order:', err);
-    res.status(500).json({ error: err.message || 'Server error creating print order.' });
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'ORDER_SUBMISSION_FAILED',
+        message: err.message || 'Unable to submit your order. Please try again.',
+      },
+    });
   }
 });
 
@@ -280,6 +362,12 @@ router.get('/orders/track', async (req: Request, res: Response) => {
       pageCount: f.pageCount,
       copies: f.copies,
       paperSize: f.paperSize,
+      paperType: f.paperType || 'ordinary',
+      photoPaperSize: f.photoPaperSize,
+      borderless: f.borderless ?? false,
+      quality: f.quality || 'standard',
+      baseCost: f.baseCost ?? f.subtotal,
+      surcharges: f.surcharges || { duplex: 0, borderless: 0, quality: 0, total: 0 },
       printType: f.printType,
       orientation: f.orientation,
       duplex: f.duplex,

@@ -97,10 +97,18 @@ export function OrderConfirmationReceipt({
       `Phone:      ${currentOrder.customerPhone || 'N/A'}`,
       `Status:     ${currentOrder.status.toUpperCase()}`,
       '--------------------------------------------------',
-      'DOCUMENTS & SPECIFICATIONS:',
       ...currentOrder.files.map(
-        (f, idx) =>
-          ` ${idx + 1}. ${f.fileName}\n    ${f.pageCount} pgs x ${f.copies} copy(s) | ${f.paperSize} | ${f.printType.toUpperCase()} | ${f.duplex}\n    Subtotal: ₱${f.subtotal.toFixed(2)}`
+        (f, idx) => {
+          const paperLabel = f.paperType === 'glossy' 
+            ? `Glossy Photo Paper (${f.photoPaperSize || f.paperSize})` 
+            : `${f.paperSize} Ordinary Paper`;
+          const sidesLabel = f.duplex !== 'single' ? 'Back-to-Back (+₱5)' : 'Single-Sided';
+          const extras = [
+            f.borderless ? 'Borderless (+₱5)' : null,
+            f.quality === 'high' ? 'High Quality (+₱10)' : null,
+          ].filter(Boolean).join(', ');
+          return ` ${idx + 1}. ${f.fileName}\n    ${f.pageCount} pgs x ${f.copies} copy(s) | ${paperLabel} | ${f.printType.toUpperCase()} | ${sidesLabel}${extras ? ' | ' + extras : ''}\n    Subtotal: ₱${f.subtotal.toFixed(2)}`;
+        }
       ),
       '--------------------------------------------------',
       `Finishing:  ${currentOrder.binding !== 'none' ? currentOrder.binding.toUpperCase() : 'None'}`,
@@ -385,21 +393,55 @@ export function OrderConfirmationReceipt({
             </span>
 
             <div className="divide-y divide-[#E2E7E2] border-y border-[#E2E7E2]">
-              {currentOrder.files.map((file, idx) => (
-                <div key={file.id || idx} className="py-2.5 flex items-start justify-between text-xs gap-3">
-                  <div className="space-y-0.5">
-                    <p className="font-bold text-[#20352A] leading-tight">
-                      {idx + 1}. {file.fileName}
-                    </p>
-                    <p className="text-[11px] text-[#5A6E64]">
-                      {file.pageCount} page(s) × {file.copies} copy(s) • {file.paperSize} • {file.printType === 'color' ? 'Full Color' : 'Black & White'} • {file.duplex !== 'single' ? 'Double-Sided' : 'Single-Sided'}
-                    </p>
+              {currentOrder.files.map((file, idx) => {
+                const isGlossy = file.paperType === 'glossy';
+                const paperDesc = isGlossy
+                  ? `Glossy Photo Paper (${file.photoPaperSize || file.paperSize})`
+                  : `${file.paperSize} Ordinary`;
+                const isBackToBack = file.duplex !== 'single';
+                return (
+                  <div key={file.id || idx} className="py-2.5 flex items-start justify-between text-xs gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <p className="font-bold text-[#20352A] leading-tight">
+                          {idx + 1}. {file.fileName}
+                        </p>
+                        {isGlossy && (
+                          <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[9px] font-bold">
+                            Glossy Photo
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-[#5A6E64] flex flex-wrap items-center gap-1">
+                        <span>{file.pageCount} page(s) × {file.copies} copy(s)</span>
+                        <span>•</span>
+                        <span>{paperDesc}</span>
+                        <span>•</span>
+                        <span>{file.printType === 'color' ? 'Full Color' : 'B&W'}</span>
+                        <span>•</span>
+                        <span className={isBackToBack ? 'font-semibold text-[#23664B]' : ''}>
+                          {isBackToBack ? 'Back-to-Back (+₱5)' : 'Single-Sided'}
+                        </span>
+                        {file.borderless && (
+                          <>
+                            <span>•</span>
+                            <span className="font-semibold text-[#23664B]">Borderless (+₱5)</span>
+                          </>
+                        )}
+                        {file.quality === 'high' && (
+                          <>
+                            <span>•</span>
+                            <span className="font-semibold text-[#23664B]">High Quality (+₱10)</span>
+                          </>
+                        )}
+                      </p>
+                    </div>
+                    <span className="font-bold text-[#20352A] shrink-0 text-right">
+                      ₱{file.subtotal.toFixed(2)}
+                    </span>
                   </div>
-                  <span className="font-bold text-[#20352A] shrink-0">
-                    ₱{file.subtotal.toFixed(2)}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 

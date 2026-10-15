@@ -9,14 +9,27 @@ import {
   Store, 
   MapPin,
   Clock,
-  Plus
+  Plus,
+  Sparkles,
+  Layers,
+  Sliders,
+  Maximize2
 } from 'lucide-react';
-import { calculateFileSubtotal, calculateOrderPrice, formatBytes, MAXIN_SHOP } from '../data/mockData';
+import { 
+  calculateFileSubtotal, 
+  calculateOrderPrice, 
+  calculateFilePricingBreakdown,
+  formatBytes, 
+  MAXIN_SHOP,
+  DEFAULT_PRICING 
+} from '../data/mockData';
 import { 
   PaperSize, 
+  PaperType,
   PrintType, 
   Orientation, 
   DuplexMode, 
+  PrintQuality,
   BindingOption, 
   PrintOrder,
   PricingSettings,
@@ -39,18 +52,22 @@ interface UploadDraftFile {
   previewUrl?: string;
   pageCount: number;
   copies: number;
-  paperSize: PaperSize;
-  printType: PrintType;
-  orientation: Orientation;
-  duplex: DuplexMode;
+  paperType: PaperType;        // 'ordinary' | 'glossy'
+  paperSize: PaperSize;        // 'Letter' | 'A4' | 'Legal' | 'A3'
+  photoPaperSize: string;      // '4x6' | '5x7' | 'A4'
+  printType: PrintType;        // 'bw' | 'color'
+  orientation: Orientation;    // 'portrait' | 'landscape'
+  duplex: DuplexMode;          // 'single' | 'back_to_back'
+  borderless: boolean;         // true = +₱5 surcharge
+  quality: PrintQuality;       // 'standard' (₱0) | 'high' (+₱10)
 }
 
-const MAX_TOTAL_SIZE = 50 * 1024 * 1024; // 50 MB total
+const MAX_TOTAL_SIZE = 50 * 1024 * 1024; // 50 MB total limit check
 const ALLOWED_EXTENSIONS = ['pdf', 'docx', 'doc', 'jpg', 'jpeg', 'png', 'webp', 'txt'];
 
 export function OrderView({ onNavigate }: OrderViewProps) {
   // Shop & Pricing
-  const [pricing, setPricing] = useState<PricingSettings | undefined>(undefined);
+  const [pricing, setPricing] = useState<PricingSettings>(DEFAULT_PRICING);
   const [shop, setShop] = useState<ShopLocation>(MAXIN_SHOP);
 
   // Customer Contact
@@ -71,12 +88,14 @@ export function OrderView({ onNavigate }: OrderViewProps) {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [formError, setFormError] = useState<string | null>(null);
   const [completedOrder, setCompletedOrder] = useState<PrintOrder | null>(null);
-
+  
+  // Idempotency token ref (reused on submit retry)
+  const clientRequestIdRef = useRef<string>(`req-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 8)}`);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchSettings().then(res => {
-      setPricing(res.pricing);
+      if (res.pricing) setPricing(res.pricing);
       if (res.shops && res.shops.length > 0) {
         setShop(res.shops[0]);
       }
@@ -89,8 +108,12 @@ export function OrderView({ onNavigate }: OrderViewProps) {
       pages: f.pageCount,
       copies: f.copies,
       paperSize: f.paperSize,
+      paperType: f.paperType,
+      photoPaperSize: f.photoPaperSize,
       printType: f.printType,
       duplex: f.duplex,
+      borderless: f.borderless,
+      quality: f.quality,
     })),
     binding,
     pricing,
@@ -124,7 +147,8 @@ export function OrderView({ onNavigate }: OrderViewProps) {
       const fileId = `draft-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
       let previewUrl: string | undefined;
 
-      if (file.type.startsWith('image/')) {
+      const isImage = file.type.startsWith('image/');
+      if (isImage) {
         previewUrl = URL.createObjectURL(file);
       }
 
@@ -137,17 +161,16 @@ export function OrderView({ onNavigate }: OrderViewProps) {
         previewUrl,
         pageCount: initialPages,
         copies: 1,
+        // Default photos to glossy, and documents to ordinary
+        paperType: isImage ? 'glossy' : 'ordinary',
         paperSize: 'A4',
-        printType: 'bw',
+        photoPaperSize: '4x6',
+        printType: isImage ? 'color' : 'bw',
         orientation: 'portrait',
-        duplex: 'single',
+        duplex: 'single', // Single-Sided default (Back-to-Back is +₱5)
+        borderless: false, // Borderless toggle is +₱5
+        quality: 'standard', // Standard Quality default (High Quality is +₱10)
       };
-
-      const reader = new FileReader();
-      reader.onload = e => {
-        draft.fileData = e.target?.result as string;
-      };
-      reader.readAsDataURL(file);
 
       newDrafts.push(draft);
     }
@@ -176,9 +199,67 @@ export function OrderView({ onNavigate }: OrderViewProps) {
     });
   };
 
+  /**
+   * Resilient client-side optimizer:
+   * Compresses oversized smartphone photos before sending to prevent Vercel's 4.5MB Serverless limit error.
+   */
+  const getOptimizedFileData = async (file: File): Promise<string> => {
+    if (file.type.startsWith('image/')) {
+      try {
+        return await new Promise<string>((resolve) => {
+          const img = new Image();
+          const url = URL.createObjectURL(file);
+          img.onload = () => {
+            URL.revokeObjectURL(url);
+            const maxDim = 1800;
+            let width = img.width;
+            let height = img.height;
+            if (width > maxDim || height > maxDim) {
+              if (width > height) {
+                height = Math.round((height * maxDim) / width);
+                width = maxDim;
+              } else {
+                width = Math.round((width * maxDim) / height);
+                height = maxDim;
+              }
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(img, 0, 0, width, height);
+              resolve(canvas.toDataURL('image/jpeg', 0.85));
+              return;
+            }
+            const reader = new FileReader();
+            reader.onload = ev => resolve(ev.target?.result as string);
+            reader.readAsDataURL(file);
+          };
+          img.onerror = () => {
+            URL.revokeObjectURL(url);
+            const reader = new FileReader();
+            reader.onload = ev => resolve(ev.target?.result as string);
+            reader.readAsDataURL(file);
+          };
+          img.src = url;
+        });
+      } catch (_) {}
+    }
+
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = ev => resolve(ev.target?.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
+
+    if (isSubmitting) return;
 
     if (!customerName.trim()) {
       setFormError('Please enter your full name so staff can label your print job.');
@@ -206,12 +287,7 @@ export function OrderView({ onNavigate }: OrderViewProps) {
       const payloadFiles = await Promise.all(
         draftFiles.map(async df => {
           if (!df.fileData) {
-            df.fileData = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = ev => resolve(ev.target?.result as string);
-              reader.onerror = reject;
-              reader.readAsDataURL(df.file);
-            });
+            df.fileData = await getOptimizedFileData(df.file);
           }
           return {
             fileName: df.fileName,
@@ -221,9 +297,13 @@ export function OrderView({ onNavigate }: OrderViewProps) {
             pageCount: df.pageCount,
             copies: df.copies,
             paperSize: df.paperSize,
+            paperType: df.paperType,
+            photoPaperSize: df.photoPaperSize,
             printType: df.printType,
             orientation: df.orientation,
             duplex: df.duplex,
+            borderless: df.borderless,
+            quality: df.quality,
           };
         })
       );
@@ -235,6 +315,7 @@ export function OrderView({ onNavigate }: OrderViewProps) {
         customerPhone: customerPhone.trim() || undefined,
         customerEmail: customerEmail.trim() || undefined,
         shopId: 'maxin-printing-service',
+        clientRequestId: clientRequestIdRef.current,
         binding,
         instructions: instructions.trim() || undefined,
         files: payloadFiles,
@@ -280,47 +361,49 @@ export function OrderView({ onNavigate }: OrderViewProps) {
           <span>Maxin Printing Service — Direct Order</span>
         </div>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-[#20352A]">
-          Place a Print Order
+          Place Your Print Order
         </h1>
-        <p className="text-sm text-[#5A6E64] mt-1">
-          Upload your documents, customize settings for each file, and receive your receipt and live queue ticket.
+        <p className="text-xs sm:text-sm text-[#5A6E64] mt-1">
+          Upload documents or photos, configure printing specifications, and pick up at the express counter.
         </p>
+
+        {/* Shop Intake Info Bar */}
+        <div className="mt-4 p-3 rounded-xl bg-white border border-[#D4DDD5] flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2 text-[#20352A]">
+            <MapPin className="w-4 h-4 text-[#23664B] shrink-0" />
+            <span className="font-semibold">{shop.name}</span>
+            <span className="text-[#5A6E64] hidden sm:inline">• {shop.counterInfo}</span>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <span className="inline-flex items-center gap-1 text-[#5A6E64]">
+              <Clock className="w-3.5 h-3.5" />
+              <span>Est. Wait: ~{shop.avgWaitMins} mins</span>
+            </span>
+            <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] uppercase tracking-wider ${
+              shop.acceptingOrders ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+            }`}>
+              {shop.acceptingOrders ? 'Queue Open' : 'Intake Paused'}
+            </span>
+          </div>
+        </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-8">
-        {/* Step 1: Customer Info & Maxin Shop Information */}
-        <div className="bg-white rounded-2xl p-6 border border-[#D4DDD5] shadow-2xs space-y-5">
+      <form onSubmit={handleSubmit} className="space-y-6">
+        {/* Step 1: Customer Contact */}
+        <div className="bg-white rounded-2xl p-6 border border-[#D4DDD5] shadow-2xs space-y-4">
           <div className="flex items-center justify-between border-b border-[#E2E7E2] pb-3">
             <h2 className="text-base font-bold text-[#20352A] flex items-center gap-2">
               <span className="w-6 h-6 rounded-full bg-[#23664B] text-white text-xs flex items-center justify-center font-bold">1</span>
               Customer Information
             </h2>
-            <span className="text-xs text-[#5A6E64]">No account needed</span>
+            <span className="text-xs text-[#5A6E64]">No account registration required</span>
           </div>
 
-          {/* Shop Header Pill */}
-          <div className="p-3.5 rounded-xl bg-[#F7F8F5] border border-[#E2E7E2] flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-[#23664B] text-white flex items-center justify-center font-bold shrink-0">
-                <Store className="w-4 h-4" />
-              </div>
-              <div>
-                <p className="font-bold text-[#20352A]">{MAXIN_SHOP.name}</p>
-                <p className="text-[#5A6E64]">{MAXIN_SHOP.address} — {MAXIN_SHOP.counterInfo}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 text-emerald-800 font-semibold">
-              <Clock className="w-3.5 h-3.5 text-[#23664B]" />
-              <span>Avg wait time: ~{MAXIN_SHOP.avgWaitMins} mins</span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Customer Name */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-[#20352A] flex items-center gap-1">
-                <span>Your Name</span>
-                <span className="text-rose-500">*</span>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="space-y-1.5 sm:col-span-1">
+              <label className="text-xs font-semibold text-[#20352A]">
+                Full Name <span className="text-rose-600">*</span>
               </label>
               <input
                 type="text"
@@ -328,22 +411,29 @@ export function OrderView({ onNavigate }: OrderViewProps) {
                 value={customerName}
                 onChange={e => setCustomerName(e.target.value)}
                 placeholder="e.g. Juan Dela Cruz"
-                className="w-full text-sm py-2.5 px-3.5 rounded-xl bg-[#F7F8F5] border border-[#D4DDD5] text-[#20352A] placeholder:text-[#5A6E64]/60 focus:outline-none focus:ring-2 focus:ring-[#23664B]/30"
+                className="w-full text-xs sm:text-sm py-2.5 px-3 rounded-xl bg-[#F7F8F5] border border-[#D4DDD5] text-[#20352A] placeholder:text-[#5A6E64]/60 focus:outline-hidden focus:border-[#23664B]"
               />
             </div>
 
-            {/* Customer Phone */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-[#20352A] flex items-center justify-between">
-                <span>Mobile Number / GCash (Optional)</span>
-                <span className="text-[#5A6E64] font-normal text-[11px]">For counter claim alerts</span>
-              </label>
+            <div className="space-y-1.5 sm:col-span-1">
+              <label className="text-xs font-semibold text-[#20352A]">Mobile Number (Optional)</label>
               <input
                 type="tel"
                 value={customerPhone}
                 onChange={e => setCustomerPhone(e.target.value)}
-                placeholder="e.g. +63 917 123 4567"
-                className="w-full text-sm py-2.5 px-3.5 rounded-xl bg-[#F7F8F5] border border-[#D4DDD5] text-[#20352A] placeholder:text-[#5A6E64]/60 focus:outline-none focus:ring-2 focus:ring-[#23664B]/30"
+                placeholder="e.g. 0917 123 4567"
+                className="w-full text-xs sm:text-sm py-2.5 px-3 rounded-xl bg-[#F7F8F5] border border-[#D4DDD5] text-[#20352A] placeholder:text-[#5A6E64]/60 focus:outline-hidden focus:border-[#23664B]"
+              />
+            </div>
+
+            <div className="space-y-1.5 sm:col-span-1">
+              <label className="text-xs font-semibold text-[#20352A]">Email (Optional)</label>
+              <input
+                type="email"
+                value={customerEmail}
+                onChange={e => setCustomerEmail(e.target.value)}
+                placeholder="e.g. juan@example.com"
+                className="w-full text-xs sm:text-sm py-2.5 px-3 rounded-xl bg-[#F7F8F5] border border-[#D4DDD5] text-[#20352A] placeholder:text-[#5A6E64]/60 focus:outline-hidden focus:border-[#23664B]"
               />
             </div>
           </div>
@@ -356,7 +446,7 @@ export function OrderView({ onNavigate }: OrderViewProps) {
               <span className="w-6 h-6 rounded-full bg-[#23664B] text-white text-xs flex items-center justify-center font-bold">2</span>
               Upload Documents & Customize Print Settings
             </h2>
-            <span className="text-xs text-[#5A6E64]">PDF, DOCX, JPG, PNG up to 50 MB</span>
+            <span className="text-xs text-[#5A6E64]">PDF, Word, JPG, PNG up to 50 MB</span>
           </div>
 
           {/* Upload Dropzone */}
@@ -387,7 +477,7 @@ export function OrderView({ onNavigate }: OrderViewProps) {
                   Click to browse or drop multiple files here
                 </p>
                 <p className="text-xs text-[#5A6E64] mt-0.5">
-                  Upload PDF, Word, spreadsheets, resumes, and photo attachments.
+                  Supports ordinary paper documents & Glossy Photo Paper attachments.
                 </p>
               </div>
             </div>
@@ -410,44 +500,62 @@ export function OrderView({ onNavigate }: OrderViewProps) {
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="inline-flex items-center gap-1 text-xs font-semibold text-[#23664B] hover:underline"
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-[#23664B] hover:underline cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Add Another File</span>
                 </button>
               </div>
 
-              <div className="space-y-3">
+              <div className="space-y-4">
                 {draftFiles.map((df, index) => {
-                  const subtotal = calculateFileSubtotal({
+                  const breakdown = calculateFilePricingBreakdown({
                     pages: df.pageCount,
                     copies: df.copies,
                     paperSize: df.paperSize,
+                    paperType: df.paperType,
+                    photoPaperSize: df.photoPaperSize,
                     printType: df.printType,
                     duplex: df.duplex,
+                    borderless: df.borderless,
+                    quality: df.quality,
                     pricing,
                   });
+
+                  const isGlossy = df.paperType === 'glossy';
 
                   return (
                     <div
                       key={df.id}
-                      className="p-4 rounded-xl border border-[#D4DDD5] bg-[#F7F8F5]/60 hover:bg-white transition-all space-y-3"
+                      className="p-4 sm:p-5 rounded-2xl border border-[#D4DDD5] bg-[#F7F8F5]/70 hover:bg-white transition-all space-y-4 shadow-2xs"
                     >
+                      {/* Document Top Row */}
                       <div className="flex items-start justify-between gap-3">
                         <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-lg bg-white border border-[#D4DDD5] flex items-center justify-center text-[#23664B] shrink-0 overflow-hidden shadow-2xs">
+                          <div className="w-11 h-11 rounded-xl bg-white border border-[#D4DDD5] flex items-center justify-center text-[#23664B] shrink-0 overflow-hidden shadow-2xs">
                             {df.previewUrl ? (
                               <img src={df.previewUrl} alt={df.fileName} className="w-full h-full object-cover" />
                             ) : (
-                              <FileText className="w-5 h-5" />
+                              <FileText className="w-6 h-6" />
                             )}
                           </div>
                           <div>
-                            <h4 className="font-bold text-xs sm:text-sm text-[#20352A] max-w-xs sm:max-w-md truncate">
-                              {index + 1}. {df.fileName}
-                            </h4>
-                            <p className="text-[11px] text-[#5A6E64]">
-                              {formatBytes(df.fileSize)} • Subtotal: <span className="font-bold text-[#23664B]">₱{subtotal.toFixed(2)}</span>
+                            <div className="flex items-center gap-2">
+                              <h4 className="font-bold text-xs sm:text-sm text-[#20352A] max-w-xs sm:max-w-md truncate">
+                                {index + 1}. {df.fileName}
+                              </h4>
+                              {isGlossy && (
+                                <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold">
+                                  Glossy Photo
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-[#5A6E64] mt-0.5">
+                              {formatBytes(df.fileSize)} • Base: ₱{breakdown.baseCost.toFixed(2)}
+                              {breakdown.totalSurcharges > 0 && (
+                                <span className="text-[#23664B] font-medium"> + Surcharges: ₱{breakdown.totalSurcharges.toFixed(2)}</span>
+                              )}
+                              {' '}• Subtotal: <span className="font-extrabold text-[#23664B]">₱{breakdown.subtotal.toFixed(2)}</span>
                             </p>
                           </div>
                         </div>
@@ -455,54 +563,68 @@ export function OrderView({ onNavigate }: OrderViewProps) {
                         <button
                           type="button"
                           onClick={() => handleRemoveFile(df.id)}
-                          className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                          className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
                           title="Remove file"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
 
-                      {/* Individual Print Controls */}
-                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 pt-2 border-t border-[#E2E7E2] text-xs">
-                        <div className="space-y-1">
-                          <label className="text-[11px] font-semibold text-[#5A6E64]">Pages</label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="500"
-                            value={df.pageCount}
-                            onChange={e => handleUpdateFileOption(df.id, 'pageCount', Math.max(1, parseInt(e.target.value) || 1))}
-                            className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] text-center font-bold text-[#20352A]"
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <label className="text-[11px] font-semibold text-[#5A6E64]">Copies</label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="100"
-                            value={df.copies}
-                            onChange={e => handleUpdateFileOption(df.id, 'copies', Math.max(1, parseInt(e.target.value) || 1))}
-                            className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] text-center font-bold text-[#20352A]"
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <label className="text-[11px] font-semibold text-[#5A6E64]">Paper Size</label>
+                      {/* Primary Controls Grid */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2.5 pt-3 border-t border-[#E2E7E2] text-xs">
+                        {/* Paper Type (Section 4) */}
+                        <div className="space-y-1 col-span-2 sm:col-span-2 lg:col-span-2">
+                          <label className="text-[11px] font-semibold text-[#5A6E64] flex items-center gap-1">
+                            <span>Paper Type</span>
+                            {isGlossy && <Sparkles className="w-3 h-3 text-amber-600" />}
+                          </label>
                           <select
-                            value={df.paperSize}
-                            onChange={e => handleUpdateFileOption(df.id, 'paperSize', e.target.value as PaperSize)}
-                            className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] text-[#20352A] font-medium"
+                            value={df.paperType}
+                            onChange={e => {
+                              const newType = e.target.value as PaperType;
+                              handleUpdateFileOption(df.id, 'paperType', newType);
+                              if (newType === 'glossy') {
+                                handleUpdateFileOption(df.id, 'duplex', 'single'); // Photo paper defaults single-sided
+                              }
+                            }}
+                            className="w-full py-1.5 px-2.5 rounded-lg bg-white border border-[#D4DDD5] text-[#20352A] font-semibold"
                           >
-                            <option value="Letter">Short / Letter</option>
-                            <option value="A4">A4 (Standard)</option>
-                            <option value="Legal">Long / Legal</option>
-                            <option value="A3">A3 (Large)</option>
+                            <option value="ordinary">📄 Ordinary Paper (Letter, A4, Legal)</option>
+                            <option value="glossy">🖼️ Photo Paper — Glossy (₱25 B&W / ₱35 Color)</option>
                           </select>
                         </div>
 
-                        <div className="space-y-1">
+                        {/* Dimensions / Size (Section 4) */}
+                        <div className="space-y-1 col-span-1 sm:col-span-1 lg:col-span-1">
+                          <label className="text-[11px] font-semibold text-[#5A6E64]">
+                            {isGlossy ? 'Photo Size' : 'Paper Size'}
+                          </label>
+                          {isGlossy ? (
+                            <select
+                              value={df.photoPaperSize}
+                              onChange={e => handleUpdateFileOption(df.id, 'photoPaperSize', e.target.value)}
+                              className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] text-[#20352A] font-medium"
+                            >
+                              <option value="4x6">4 × 6 in (4R)</option>
+                              <option value="5x7">5 × 7 in (5R)</option>
+                              <option value="A4">A4 Photo</option>
+                            </select>
+                          ) : (
+                            <select
+                              value={df.paperSize}
+                              onChange={e => handleUpdateFileOption(df.id, 'paperSize', e.target.value as PaperSize)}
+                              className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] text-[#20352A] font-medium"
+                            >
+                              <option value="Letter">Letter / Short (₱3/₱6)</option>
+                              <option value="A4">A4 Standard (₱5/₱8)</option>
+                              <option value="Legal">Legal / Long (₱7/₱10)</option>
+                              <option value="A3">A3 Large (₱12/₱20)</option>
+                            </select>
+                          )}
+                        </div>
+
+                        {/* Color Mode */}
+                        <div className="space-y-1 col-span-1 sm:col-span-1 lg:col-span-1">
                           <label className="text-[11px] font-semibold text-[#5A6E64]">Color Mode</label>
                           <select
                             value={df.printType}
@@ -514,28 +636,149 @@ export function OrderView({ onNavigate }: OrderViewProps) {
                           </select>
                         </div>
 
-                        <div className="space-y-1">
-                          <label className="text-[11px] font-semibold text-[#5A6E64]">Sides</label>
-                          <select
-                            value={df.duplex}
-                            onChange={e => handleUpdateFileOption(df.id, 'duplex', e.target.value as DuplexMode)}
-                            className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] text-[#20352A] font-medium"
-                          >
-                            <option value="single">Single-Sided</option>
-                            <option value="double_long">Double-Sided</option>
-                          </select>
+                        {/* Pages & Copies */}
+                        <div className="space-y-1 col-span-1 sm:col-span-1 lg:col-span-1">
+                          <label className="text-[11px] font-semibold text-[#5A6E64]">
+                            {isGlossy ? 'Sheets / Photos' : 'Pages'}
+                          </label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="500"
+                            value={df.pageCount}
+                            onChange={e => handleUpdateFileOption(df.id, 'pageCount', Math.max(1, parseInt(e.target.value) || 1))}
+                            className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] text-center font-bold text-[#20352A]"
+                          />
                         </div>
 
-                        <div className="space-y-1">
-                          <label className="text-[11px] font-semibold text-[#5A6E64]">Orientation</label>
+                        <div className="space-y-1 col-span-1 sm:col-span-1 lg:col-span-1">
+                          <label className="text-[11px] font-semibold text-[#5A6E64]">Copies</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="100"
+                            value={df.copies}
+                            onChange={e => handleUpdateFileOption(df.id, 'copies', Math.max(1, parseInt(e.target.value) || 1))}
+                            className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] text-center font-bold text-[#20352A]"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Secondary Options Grid: Back-to-Back, Borderless, Quality (Sections 2, 3, 5) */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 text-xs">
+                        {/* Sides (Section 2: Replace Double-Sided with Back-to-Back) */}
+                        <div className="space-y-1 p-2.5 rounded-xl bg-white border border-[#D4DDD5]/80">
+                          <div className="flex items-center justify-between">
+                            <label className="text-[11px] font-semibold text-[#20352A]">
+                              Sides (Duplex)
+                            </label>
+                            <span className="text-[10px] text-[#5A6E64]">
+                              {isGlossy ? 'Single-Sided' : (df.duplex === 'single' ? 'Free (₱0)' : '+₱5.00 surcharge')}
+                            </span>
+                          </div>
+                          {isGlossy ? (
+                            <div className="py-1.5 px-2.5 rounded-lg bg-gray-100 border border-[#D4DDD5] text-[#5A6E64] font-medium text-xs">
+                              Single-Sided (Glossy photo paper)
+                            </div>
+                          ) : (
+                            <select
+                              value={df.duplex}
+                              onChange={e => handleUpdateFileOption(df.id, 'duplex', e.target.value as DuplexMode)}
+                              className="w-full py-1.5 px-2 rounded-lg bg-[#F7F8F5] border border-[#D4DDD5] text-[#20352A] font-medium"
+                            >
+                              <option value="single">Single-Sided — ₱0</option>
+                              <option value="back_to_back">Back-to-Back — +₱5 per job</option>
+                            </select>
+                          )}
+                          <p className="text-[10px] text-[#5A6E64] mt-0.5">
+                            {isGlossy ? 'Duplex not supported on photo sheets' : 'Duplex prints on both sides (+₱5 flat per file)'}
+                          </p>
+                        </div>
+
+                        {/* Borderless Printing Toggle (Section 3) */}
+                        <div className="space-y-1 p-2.5 rounded-xl bg-white border border-[#D4DDD5]/80">
+                          <div className="flex items-center justify-between">
+                            <label className="text-[11px] font-semibold text-[#20352A] flex items-center gap-1">
+                              <Maximize2 className="w-3 h-3 text-[#23664B]" />
+                              <span>Borderless Printing</span>
+                            </label>
+                            <span className="text-[10px] text-[#5A6E64]">
+                              {df.borderless ? '+₱5.00 surcharge' : 'Standard margins (₱0)'}
+                            </span>
+                          </div>
+                          <label className="flex items-center gap-2 pt-1 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={df.borderless}
+                              onChange={e => handleUpdateFileOption(df.id, 'borderless', e.target.checked)}
+                              className="w-4 h-4 rounded text-[#23664B] focus:ring-[#23664B] accent-[#23664B]"
+                            />
+                            <span className="text-[11px] text-[#20352A] font-medium">
+                              Enable edge-to-edge printing (+₱5)
+                            </span>
+                          </label>
+                          <p className="text-[10px] text-[#5A6E64] mt-0.5">
+                            Eliminates paper margins; ideal for full-bleed photos & posters
+                          </p>
+                        </div>
+
+                        {/* Printing Quality (Section 5) */}
+                        <div className="space-y-1 p-2.5 rounded-xl bg-white border border-[#D4DDD5]/80">
+                          <div className="flex items-center justify-between">
+                            <label className="text-[11px] font-semibold text-[#20352A] flex items-center gap-1">
+                              <Sliders className="w-3 h-3 text-[#23664B]" />
+                              <span>Printing Quality</span>
+                            </label>
+                            <span className="text-[10px] text-[#5A6E64]">
+                              {df.quality === 'high' ? '+₱10.00 surcharge' : 'Standard (₱0)'}
+                            </span>
+                          </div>
                           <select
-                            value={df.orientation}
-                            onChange={e => handleUpdateFileOption(df.id, 'orientation', e.target.value as Orientation)}
-                            className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] text-[#20352A] font-medium"
+                            value={df.quality}
+                            onChange={e => handleUpdateFileOption(df.id, 'quality', e.target.value as PrintQuality)}
+                            className="w-full py-1.5 px-2 rounded-lg bg-[#F7F8F5] border border-[#D4DDD5] text-[#20352A] font-medium"
                           >
-                            <option value="portrait">Portrait</option>
-                            <option value="landscape">Landscape</option>
+                            <option value="standard">Standard Quality — ₱0</option>
+                            <option value="high">High Quality — +₱10 per job</option>
                           </select>
+                          <p className="text-[10px] text-[#5A6E64] mt-0.5">
+                            High Quality delivers richer colors and finer resolution
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Surcharges & Subtotal Summary Badge */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white border border-[#D4DDD5] text-[11px]">
+                        <div className="flex flex-wrap items-center gap-1.5 text-[#5A6E64]">
+                          <span>Charges applied:</span>
+                          <span className="px-1.5 py-0.5 rounded-md bg-[#F7F8F5] border border-[#E2E7E2] text-[#20352A] font-medium">
+                            Base: ₱{breakdown.baseCost.toFixed(2)}
+                          </span>
+                          {breakdown.surcharges.backToBack > 0 && (
+                            <span className="px-1.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 font-medium">
+                              Back-to-Back +₱5
+                            </span>
+                          )}
+                          {breakdown.surcharges.borderless > 0 && (
+                            <span className="px-1.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 font-medium">
+                              Borderless +₱5
+                            </span>
+                          )}
+                          {breakdown.surcharges.quality > 0 && (
+                            <span className="px-1.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 font-medium">
+                              High Quality +₱10
+                            </span>
+                          )}
+                          {breakdown.totalSurcharges === 0 && (
+                            <span className="text-[#5A6E64]">No extra surcharges</span>
+                          )}
+                        </div>
+
+                        <div className="text-right">
+                          <span className="text-[#5A6E64] mr-1.5">File Total:</span>
+                          <span className="font-extrabold text-[#23664B] text-sm">
+                            ₱{breakdown.subtotal.toFixed(2)}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -636,15 +879,18 @@ export function OrderView({ onNavigate }: OrderViewProps) {
                 ></div>
               </div>
               <p className="text-[11px] text-[#5A6E64] text-center">
-                Generating queue ticket and sending files to Maxin Printing Service...
+                Generating queue ticket and recording order in Maxin Printing Service...
               </p>
             </div>
           )}
 
           {formError && (
-            <div className="flex items-start gap-2 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs">
+            <div className="flex items-start gap-2 p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{formError}</span>
+              <div className="space-y-1">
+                <p className="font-bold">Submission Notice</p>
+                <p>{formError}</p>
+              </div>
             </div>
           )}
         </div>

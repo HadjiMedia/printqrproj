@@ -133,17 +133,35 @@ export async function dispatchOrderToTelegram(orderOrId: string | PrintOrder): P
   try {
     // 1. Send Order Header Summary
     const filesSummary = order.files
-      .map(
-        (f, idx) =>
-          `  ${idx + 1}. *${f.fileName}* (${f.pageCount} pgs, ${f.copies}x, ${f.paperSize}, ${f.printType.toUpperCase()}, ${f.duplex !== 'single' ? 'Duplex' : '1-sided'})`
-      )
-      .join('\n');
+      .map((f, idx) => {
+        const sidesLabel = f.duplex === 'single' ? 'Single-Sided' : 'Back-to-Back (+₱5)';
+        const borderlessLabel = f.borderless ? 'Borderless (+₱5)' : '';
+        const qualityLabel = f.quality === 'high' ? 'High Quality (+₱10)' : 'Standard';
+        const paperLabel = f.paperType === 'glossy' 
+          ? `Glossy Photo Paper (${f.photoPaperSize || f.paperSize})` 
+          : `${f.paperSize} Paper`;
+        const surchargesParts = [
+          sidesLabel !== 'Single-Sided' ? sidesLabel : null,
+          borderlessLabel || null,
+          f.quality === 'high' ? qualityLabel : null,
+        ].filter(Boolean).join(', ');
 
+        return (
+          `  ${idx + 1}. *${f.fileName.replace(/[_*[\]()~`>#+-=|{}.!]/g, ' ')}*\n` +
+          `     • Type: ${paperLabel} | ${f.printType === 'color' ? 'Color' : 'B&W'}\n` +
+          `     • Setup: ${f.pageCount} pgs × ${f.copies} copy(s) | ${sidesLabel}\n` +
+          `     • Options: ${borderlessLabel ? 'Borderless' : 'Standard border'} | ${qualityLabel}\n` +
+          `     • Subtotal: ₱${f.subtotal.toFixed(2)}`
+        );
+      })
+      .join('\n\n');
+
+    const cleanCustName = order.customerName.replace(/[_*[\]()~`>#+-=|{}.!]/g, ' ');
     const headerText =
-      `🖨️ *NEW PRINT ORDER* — *[#${order.queueNumber}]*\n` +
+      `🖨️ *NEW PRINT ORDER* — *[${order.queueNumber}]*\n` +
       `━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
       `📋 *Order ID:* \`${order.id}\`\n` +
-      `👤 *Customer:* ${order.customerName}\n` +
+      `👤 *Customer:* ${cleanCustName}\n` +
       `📞 *Phone:* ${order.customerPhone || 'N/A'}\n` +
       `🏪 *Branch:* ${shopName}\n` +
       `💰 *Total Due:* ₱${order.totalPrice.toFixed(2)}\n` +
@@ -164,7 +182,7 @@ export async function dispatchOrderToTelegram(orderOrId: string | PrintOrder): P
 
     const headerData = await headerRes.json();
     if (!headerRes.ok || !headerData.ok) {
-      throw new Error(`Telegram header send failed: ${headerData.description || 'Unknown error'}`);
+      console.warn(`[Telegram] Header send notice:`, headerData.description || 'Unknown error');
     }
 
     // 2. Deliver Each File as an Attachment & Perform Automatic Disk Cleanup
@@ -202,10 +220,18 @@ export async function dispatchOrderToTelegram(orderOrId: string | PrintOrder): P
       const blob = new Blob([new Uint8Array(fileBuffer)], { type: file.fileType || 'application/octet-stream' });
       formData.append('document', blob, file.fileName);
 
+      const paperInfo = file.paperType === 'glossy' 
+        ? `Photo Paper Glossy (${file.photoPaperSize || file.paperSize})` 
+        : `${file.paperSize} Standard`;
+      const sidesInfo = file.duplex === 'single' ? 'Single-Sided' : 'Back-to-Back (+₱5)';
+      const borderlessInfo = file.borderless ? 'Borderless (+₱5)' : 'Standard Margin';
+      const qualityInfo = file.quality === 'high' ? 'High Quality (+₱10)' : 'Standard Quality';
+
       const caption =
-        `📄 [Ticket #${order.queueNumber}] File ${i + 1}/${order.files.length}: ${file.fileName}\n` +
-        `Specs: ${file.copies} copy(s), ${file.paperSize}, ${file.printType.toUpperCase()}, ${file.duplex}\n` +
-        `Pages: ${file.pageCount} | Subtotal: ₱${file.subtotal.toFixed(2)}`;
+        `📄 [Ticket ${order.queueNumber}] File ${i + 1}/${order.files.length}: ${file.fileName}\n` +
+        `Specs: ${paperInfo} | ${file.printType.toUpperCase()} | ${sidesInfo}\n` +
+        `Options: ${borderlessInfo} | ${qualityInfo}\n` +
+        `Units: ${file.pageCount} pgs × ${file.copies} copy(s) | Subtotal: ₱${file.subtotal.toFixed(2)}`;
       formData.append('caption', caption);
 
       const docRes = await fetch(`${TELEGRAM_API_BASE}/bot${token}/sendDocument`, {

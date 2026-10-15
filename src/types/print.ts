@@ -1,9 +1,11 @@
 export type OrderStatus = 'waiting' | 'printing' | 'ready' | 'completed' | 'cancelled';
 
 export type PaperSize = 'Letter' | 'A4' | 'Legal' | 'A3';
+export type PaperType = 'ordinary' | 'glossy';
 export type PrintType = 'bw' | 'color';
 export type Orientation = 'portrait' | 'landscape';
-export type DuplexMode = 'single' | 'double_long' | 'double_short';
+export type DuplexMode = 'single' | 'back_to_back' | 'double_long' | 'double_short';
+export type PrintQuality = 'standard' | 'high';
 export type BindingOption = 'none' | 'staple' | 'spiral' | 'booklet';
 
 export interface ShopLocation {
@@ -18,6 +20,12 @@ export interface ShopLocation {
   acceptingOrders: boolean;
 }
 
+export interface OrderFileSurcharges {
+  backToBack: number;   // +₱5 if back_to_back
+  borderless: number;   // +₱5 if borderless
+  quality: number;      // +₱10 if high quality
+}
+
 export interface OrderFile {
   id: string;
   fileName: string;
@@ -27,10 +35,18 @@ export interface OrderFile {
   pageCount: number;
   copies: number;
   paperSize: PaperSize;
+  paperType: PaperType;   // 'ordinary' | 'glossy'
+  photoPaperSize?: string;// '4x6' | '5x7' | 'A4'
   printType: PrintType;
   orientation: Orientation;
-  duplex: DuplexMode;
-  subtotal: number;
+  duplex: DuplexMode;     // 'single' | 'back_to_back'
+  borderless: boolean;    // true = +₱5 surcharge
+  quality: PrintQuality;  // 'standard' (₱0) | 'high' (+₱10)
+  
+  // Itemized Pricing Breakdown
+  baseCost: number;       // Base rate * chargeable sheets * copies
+  surcharges: OrderFileSurcharges;
+  subtotal: number;       // baseCost + surcharges sum
   
   // Telegram & file storage lifecycle
   telegramStatus: 'pending' | 'delivered' | 'failed' | 'not_configured';
@@ -56,6 +72,7 @@ export interface PrintOrder {
   customerName: string;
   customerPhone?: string;
   customerEmail?: string;
+  clientRequestId?: string; // Idempotency key to prevent duplicate orders
   
   // Multiple files
   files: OrderFile[];
@@ -83,17 +100,41 @@ export interface PrintOrder {
   isDemo?: boolean;
 }
 
+export interface PhotoPaperSizeOption {
+  id: string;
+  label: string;
+  dimensions: string;
+  enabled: boolean;
+}
+
 export interface PricingSettings {
   currency: string;
   symbol: string;
-  // Per page prices: [paperSize][printType]
+  // Per page prices for ordinary paper: [paperSize][printType]
   pagePrices: {
     Letter: { bw: number; color: number };
     A4: { bw: number; color: number };
     Legal: { bw: number; color: number };
     A3: { bw: number; color: number };
   };
-  duplexDiscountPercent: number; // e.g. 10%
+  // Photo Paper — Glossy rates (per sheet)
+  photoPaperPrices: {
+    glossy: { bw: number; color: number }; // Default: bw: 25, color: 35
+  };
+  photoPaperSizes: PhotoPaperSizeOption[];
+  // Flat surcharges per document printing job
+  surcharges: {
+    backToBack: number;   // ₱5
+    borderless: number;   // ₱5
+    highQuality: number;  // ₱10
+  };
+  optionsConfig: {
+    allowBorderlessOnOrdinary: boolean;
+    allowBorderlessOnGlossy: boolean;
+    allowBackToBackOnGlossy: boolean;
+    allowHighQuality: boolean;
+  };
+  duplexDiscountPercent?: number; // Deprecated, preserved for backward-compat
   bindingPrices: {
     none: number;
     staple: number;
