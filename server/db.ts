@@ -788,7 +788,7 @@ export async function updateOrderStatus(
          SET status = $1,
              status_message = $2,
              updated_at = $3,
-             completed_at = CASE WHEN $1 = 'completed' THEN $3 ELSE completed_at END
+             completed_at = CASE WHEN CAST($1 AS varchar) = 'completed' THEN $3 ELSE completed_at END
          WHERE id = $4
          RETURNING id`,
         [status, note || `Status updated to ${status}`, timestamp, orderId]
