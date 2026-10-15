@@ -61,12 +61,13 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
   }
 
   const statusCode = typeof err?.status === 'number' && err.status >= 400 && err.status < 600 ? err.status : 500;
-  // Client errors may explain themselves; server errors never expose internals (DB errors, tokens, paths).
+  const knownOperationalCode = ['DATABASE_NOT_CONFIGURED', 'DATABASE_UNAVAILABLE'].includes(err?.code) ? err.code : null;
+  // Only expose explicitly safe operational messages; never leak raw database errors, tokens, or paths.
   res.status(statusCode).json({
     success: false,
     error: {
-      code: statusCode >= 500 ? 'SERVER_ERROR' : (err?.code && typeof err.code === 'string' ? err.code : 'INVALID_REQUEST'),
-      message: statusCode >= 500 ? 'A server error occurred. Please try again.' : (err?.message || 'Invalid request.'),
+      code: knownOperationalCode || (statusCode >= 500 ? 'SERVER_ERROR' : (err?.code && typeof err.code === 'string' ? err.code : 'INVALID_REQUEST')),
+      message: knownOperationalCode ? err.message : (statusCode >= 500 ? 'A server error occurred. Please try again.' : (err?.message || 'Invalid request.')),
     },
   });
 });
