@@ -11,6 +11,9 @@ import { OrderView } from './views/OrderView';
 import { TrackView } from './views/TrackView';
 import { ShopQRView } from './views/ShopQRView';
 import { AdminView } from './views/AdminView';
+import { PricingSettings, ShopLocation } from './types/print';
+import { DEFAULT_PRICING, MAXIN_SHOP } from './data/mockData';
+import { fetchSettings } from './services/api';
 
 export default function App() {
   const [currentTab, setCurrentTab] = useState<string>('landing');
@@ -18,6 +21,22 @@ export default function App() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState<boolean>(() => {
     return localStorage.getItem('printdrop_admin_auth') === 'true';
   });
+  const [pricing, setPricing] = useState<PricingSettings>(DEFAULT_PRICING);
+  const [shop, setShop] = useState<ShopLocation>(MAXIN_SHOP);
+
+  const refreshSettings = async () => {
+    try {
+      const res = await fetchSettings();
+      if (res.pricing) setPricing(res.pricing);
+      if (res.shops && res.shops.length > 0) setShop(res.shops[0]);
+    } catch (_) {}
+  };
+
+  useEffect(() => {
+    refreshSettings();
+    const interval = setInterval(refreshSettings, 10000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Handle URL parameters for direct deep-linking from QR codes or share links
   useEffect(() => {
@@ -90,6 +109,8 @@ export default function App() {
         {currentTab === 'landing' && (
           <LandingView
             onNavigate={handleNavigate}
+            pricing={pricing}
+            shop={shop}
           />
         )}
 
@@ -116,6 +137,7 @@ export default function App() {
           <AdminView
             isAdminLoggedIn={isAdminLoggedIn}
             onLoginChange={handleLoginChange}
+            onSettingsSaved={refreshSettings}
           />
         )}
       </main>
