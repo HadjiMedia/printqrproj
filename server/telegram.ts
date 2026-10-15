@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { PrintOrder, OrderFile } from '../src/types/print';
-import { getDatabase, saveDatabase, logAudit, getPgPool, fetchOrderById } from './db';
+import { PrintOrder, OrderFile } from '../src/types/print.js';
+import { getDatabase, saveDatabase, logAudit, getPgPool, fetchOrderById } from './db.js';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 

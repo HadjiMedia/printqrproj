@@ -1,16 +1,12 @@
 import express from 'express';
 import dotenv from 'dotenv';
-import apiRouter from './routes';
-import { initDatabase } from './db';
+import apiRouter from './routes.js';
+import { ensureDatabaseReady } from './db.js';
 
 dotenv.config();
 
 const app = express();
 
-// Initialize database schema (Neon or local fallback)
-initDatabase().catch(err => {
-  console.error('[DB] Startup init error:', err);
-});
 
 // Middleware: Request Body Parsers (support documents & images up to 50MB)
 app.use(express.json({ limit: '50mb' }));
@@ -24,6 +20,16 @@ app.get(['/api/health', '/health'], (_req, res) => {
     serverless: Boolean(process.env.VERCEL),
     time: new Date().toISOString(),
   });
+});
+
+// Every request waits for DB bootstrap (important on serverless cold starts)
+app.use(async (_req, _res, next) => {
+  try {
+    await ensureDatabaseReady();
+    next();
+  } catch (err) {
+    next(err);
+  }
 });
 
 // Mount Public & Protected API Router on both '/api' and '/'
@@ -46,13 +52,21 @@ app.use((req, res) => {
 // Global JSON Error Handler (Prevents any HTML/plain text error leakage to frontend)
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('[API] Server error caught:', err);
+
+  if (err?.type === 'entity.parse.failed') {
+    return res.status(400).json({ success: false, error: { code: 'INVALID_JSON', message: 'The request could not be read. Please try again.' } });
+  }
+  if (err?.type === 'entity.too.large') {
+    return res.status(413).json({ success: false, error: { code: 'PAYLOAD_TOO_LARGE', message: 'The upload is too large. Please use smaller files.' } });
+  }
+
   const statusCode = typeof err?.status === 'number' && err.status >= 400 && err.status < 600 ? err.status : 500;
-  
+  // Client errors may explain themselves; server errors never expose internals (DB errors, tokens, paths).
   res.status(statusCode).json({
     success: false,
     error: {
-      code: err?.code || (statusCode === 400 ? 'INVALID_REQUEST' : 'SERVER_ERROR'),
-      message: err?.message || 'A server error occurred processing your request. Please try again.',
+      code: statusCode >= 500 ? 'SERVER_ERROR' : (err?.code && typeof err.code === 'string' ? err.code : 'INVALID_REQUEST'),
+      message: statusCode >= 500 ? 'A server error occurred. Please try again.' : (err?.message || 'Invalid request.'),
     },
   });
 });

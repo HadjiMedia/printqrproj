@@ -2,9 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { Pool } from '@neondatabase/serverless';
-import { PrintOrder, OrderFile, OrderStatus, PricingSettings, ShopLocation, TrustedDevice } from '../src/types/print';
-import { DEFAULT_PRICING, MAXIN_SHOP, INITIAL_ORDERS } from '../src/data/mockData';
-import { hashPassword, verifyPassword } from './auth';
+import { PrintOrder, OrderFile, OrderStatus, PricingSettings, ShopLocation, TrustedDevice } from '../src/types/print.js';
+import { DEFAULT_PRICING, MAXIN_SHOP, INITIAL_ORDERS } from '../src/data/mockData.js';
+import { hashPassword, verifyPassword } from './auth.js';
 
 const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 const DATA_DIR = isServerless ? path.resolve('/tmp', 'printdrop_data') : path.resolve(process.cwd(), 'data');
@@ -305,6 +305,8 @@ async function initNeonSchema(): Promise<void> {
       ALTER TABLE printdrop_order_files ADD COLUMN IF NOT EXISTS back_to_back_surcharge NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
       ALTER TABLE printdrop_order_files ADD COLUMN IF NOT EXISTS borderless_surcharge NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
       ALTER TABLE printdrop_order_files ADD COLUMN IF NOT EXISTS quality_surcharge NUMERIC(10, 2) NOT NULL DEFAULT 0.00;
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_printdrop_orders_client_request_id
+        ON printdrop_orders (client_request_id) WHERE client_request_id IS NOT NULL;
     `);
 
     // Seed default admin if missing
@@ -613,57 +615,93 @@ export async function fetchOrderByClientRequestId(clientRequestId: string): Prom
   return found || null;
 }
 
+export class OrderPersistenceError extends Error {
+  code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+export function isUniqueViolation(err: any): boolean {
+  return Boolean(err && err.code === '23505');
+}
+
+/**
+ * Saves an order. Throws if the order could not be durably saved: callers must never
+ * report success unless this resolves. (Previously Neon errors were swallowed and the
+ * order was kept only in per-instance memory, which serverless discards.)
+ */
 export async function insertOrder(order: PrintOrder): Promise<void> {
   const pool = getPgPool();
-  if (pool) {
-    try {
-      await pool.query(
-        `INSERT INTO printdrop_orders (
-          id, queue_number, tracking_token, shop_id, customer_name, customer_phone, customer_email,
-          client_request_id, binding, instructions, status, status_message, total_price, telegram_status, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-        [
-          order.id, order.queueNumber, order.trackingToken, order.shopId || 'maxin-printing-service',
-          order.customerName, order.customerPhone, order.customerEmail, order.clientRequestId || null,
-          order.binding, order.instructions, order.status, order.statusMessage, order.totalPrice,
-          order.telegramStatus, order.createdAt, order.updatedAt,
-        ]
+
+  if (!pool) {
+    if (isServerless) {
+      throw new OrderPersistenceError(
+        'DATABASE_NOT_CONFIGURED',
+        'Order storage is not configured on the server. Please contact Maxin counter staff.'
       );
-
-      for (const f of order.files) {
-        await pool.query(
-          `INSERT INTO printdrop_order_files (
-            id, order_id, file_name, file_size, file_type, page_count, copies, paper_size,
-            paper_type, photo_paper_size, print_type, orientation, duplex, borderless, quality,
-            base_cost, back_to_back_surcharge, borderless_surcharge, quality_surcharge, subtotal,
-            disk_path, telegram_status, telegram_file_id, is_deleted_from_disk
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
-          [
-            f.id, order.id, f.fileName, f.fileSize, f.fileType, f.pageCount, f.copies, f.paperSize,
-            f.paperType || 'ordinary', f.photoPaperSize || null, f.printType, f.orientation,
-            f.duplex, Boolean(f.borderless), f.quality || 'standard',
-            f.baseCost ?? f.subtotal, f.surcharges?.backToBack ?? 0, f.surcharges?.borderless ?? 0,
-            f.surcharges?.quality ?? 0, f.subtotal,
-            f.diskPath, f.telegramStatus, f.telegramFileId, f.isDeletedFromDisk,
-          ]
-        );
-      }
-
-      for (const sh of order.statusHistory) {
-        await pool.query(
-          'INSERT INTO printdrop_status_history (order_id, status, timestamp, changed_by, note) VALUES ($1, $2, $3, $4, $5)',
-          [order.id, sh.status, sh.timestamp, sh.changedBy, sh.note]
-        );
-      }
-    } catch (err) {
-      console.error('[DB] Error inserting order into Neon:', err);
     }
+    // Local development only: JSON file store
+    const localDb = getDatabase();
+    localDb.orders.unshift(order);
+    saveDatabase(localDb);
+    return;
   }
 
-  // Also update in-memory cache
-  const db = getDatabase();
-  db.orders.unshift(order);
-  saveDatabase(db);
+  if (!isPgInitialized) await initNeonSchema();
+  if (!isPgInitialized) {
+    throw new OrderPersistenceError('DATABASE_UNAVAILABLE', 'Order storage is temporarily unavailable. Please try again.');
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO printdrop_orders (
+        id, queue_number, tracking_token, shop_id, customer_name, customer_phone, customer_email,
+        client_request_id, binding, instructions, status, status_message, total_price, telegram_status, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+      [
+        order.id, order.queueNumber, order.trackingToken, order.shopId || 'maxin-printing-service',
+        order.customerName, order.customerPhone ?? null, order.customerEmail ?? null, order.clientRequestId || null,
+        order.binding, order.instructions ?? null, order.status, order.statusMessage ?? null, order.totalPrice,
+        order.telegramStatus, order.createdAt, order.updatedAt,
+      ]
+    );
+
+    for (const f of order.files) {
+      await client.query(
+        `INSERT INTO printdrop_order_files (
+          id, order_id, file_name, file_size, file_type, page_count, copies, paper_size,
+          paper_type, photo_paper_size, print_type, orientation, duplex, borderless, quality,
+          base_cost, back_to_back_surcharge, borderless_surcharge, quality_surcharge, subtotal,
+          disk_path, telegram_status, telegram_file_id, is_deleted_from_disk
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
+        [
+          f.id, order.id, f.fileName, f.fileSize, f.fileType, f.pageCount, f.copies, f.paperSize,
+          f.paperType || 'ordinary', f.photoPaperSize || null, f.printType, f.orientation,
+          f.duplex, Boolean(f.borderless), f.quality || 'standard',
+          f.baseCost ?? f.subtotal, f.surcharges?.backToBack ?? 0, f.surcharges?.borderless ?? 0,
+          f.surcharges?.quality ?? 0, f.subtotal,
+          f.diskPath ?? null, f.telegramStatus, f.telegramFileId ?? null, f.isDeletedFromDisk,
+        ]
+      );
+    }
+
+    for (const sh of order.statusHistory) {
+      await client.query(
+        'INSERT INTO printdrop_status_history (order_id, status, timestamp, changed_by, note) VALUES ($1, $2, $3, $4, $5)',
+        [order.id, sh.status, sh.timestamp, sh.changedBy, sh.note ?? null]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 export async function updateOrderStatus(
@@ -958,6 +996,106 @@ export function generateTrackingToken(): string {
   return crypto.randomBytes(16).toString('hex');
 }
 
+/**
+ * Atomic queue ticket allocation. With Neon this is a single upsert, so concurrent
+ * serverless instances can never hand out the same ticket.
+ */
+export async function allocateQueueNumber(): Promise<string> {
+  const pool = getPgPool();
+  if (!pool) return generateQueueNumber();
+  if (!isPgInitialized) await initNeonSchema();
+  const key = `maxin_${new Date().toISOString().slice(0, 10)}`;
+  const res = await pool.query(
+    `INSERT INTO printdrop_queue_counters (counter_date, current_number)
+     VALUES ($1, GREATEST(1046, COALESCE((SELECT MAX(NULLIF(regexp_replace(queue_number, '\\D', '', 'g'), '')::int) FROM printdrop_orders), 1045) + 1))
+     ON CONFLICT (counter_date) DO UPDATE SET current_number = printdrop_queue_counters.current_number + 1
+     RETURNING current_number`,
+    [key]
+  );
+  return `#${res.rows[0].current_number}`;
+}
+
+export async function allocateOrderId(): Promise<string> {
+  const pool = getPgPool();
+  if (!pool) return generateOrderId();
+  for (let i = 0; i < 10; i++) {
+    const candidate = `PD-${Math.floor(1000 + Math.random() * 9000)}`;
+    const res = await pool.query('SELECT 1 FROM printdrop_orders WHERE id = $1', [candidate]);
+    if (res.rows.length === 0) return candidate;
+  }
+  // 4-digit space is crowded: fall back to a longer unique suffix
+  return `PD-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+}
+
+// ====================================================================
+// Persistent Settings (pricing + shops) — Neon is authoritative
+// ====================================================================
+
+function isPlainObject(v: any): boolean {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+export function deepMerge<T>(base: T, patch: any): T {
+  if (!isPlainObject(base) || !isPlainObject(patch)) return (patch === undefined ? base : patch) as T;
+  const out: any = { ...(base as any) };
+  for (const k of Object.keys(patch)) {
+    out[k] = isPlainObject(out[k]) && isPlainObject(patch[k]) ? deepMerge(out[k], patch[k]) : patch[k];
+  }
+  return out;
+}
+
+async function readSetting(key: string): Promise<any | undefined> {
+  const pool = getPgPool();
+  if (!pool) return undefined;
+  if (!isPgInitialized) await initNeonSchema();
+  const res = await pool.query('SELECT value FROM printdrop_settings WHERE key = $1', [key]);
+  return res.rows.length > 0 ? res.rows[0].value : undefined;
+}
+
+async function writeSetting(key: string, value: any): Promise<void> {
+  const pool = getPgPool();
+  if (!pool) return;
+  if (!isPgInitialized) await initNeonSchema();
+  await pool.query(
+    `INSERT INTO printdrop_settings (key, value, updated_at) VALUES ($1, $2::jsonb, NOW())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+    [key, JSON.stringify(value)]
+  );
+}
+
+/** Stored admin pricing merged over defaults, so existing valid admin prices are preserved and new fields get defaults. */
+export async function loadPricingSettings(): Promise<PricingSettings> {
+  if (!getPgPool()) return getDatabase().pricing;
+  const stored = await readSetting('pricing');
+  return deepMerge<PricingSettings>(DEFAULT_PRICING, stored || {});
+}
+
+export async function savePricingSettings(pricing: PricingSettings): Promise<void> {
+  if (getPgPool()) {
+    await writeSetting('pricing', pricing);
+  } else {
+    const localDb = getDatabase();
+    localDb.pricing = pricing;
+    saveDatabase(localDb);
+  }
+}
+
+export async function loadShops(): Promise<ShopLocation[]> {
+  if (!getPgPool()) return getDatabase().shops;
+  const stored = await readSetting('shops');
+  return Array.isArray(stored) && stored.length > 0 ? stored : [MAXIN_SHOP];
+}
+
+export async function saveShops(shops: ShopLocation[]): Promise<void> {
+  if (getPgPool()) {
+    await writeSetting('shops', shops);
+  } else {
+    const localDb = getDatabase();
+    localDb.shops = shops;
+    saveDatabase(localDb);
+  }
+}
+
 // ====================================================================
 // Admin Session Management
 // ====================================================================
@@ -1049,4 +1187,16 @@ export function logAudit(actor: string, action: string, details: string): void {
     db.auditLogs = db.auditLogs.slice(0, 500);
   }
   saveDatabase(db);
+}
+
+let initPromise: Promise<DatabaseSchema> | null = null;
+/** Awaited by every request so handlers never run before schema bootstrap finishes (cold starts). */
+export function ensureDatabaseReady(): Promise<DatabaseSchema> {
+  if (!initPromise) {
+    initPromise = initDatabase().catch(err => {
+      initPromise = null;
+      throw err;
+    });
+  }
+  return initPromise;
 }

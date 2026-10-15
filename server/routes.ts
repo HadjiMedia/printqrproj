@@ -23,16 +23,68 @@ import {
   registerOrRequestDevice,
   approveDevice,
   revokeDevice,
-  fetchOrderByClientRequestId
-} from './db';
-import { calculateFileSubtotal, calculateOrderPrice, calculateFilePricingBreakdown } from '../src/data/mockData';
-import { PrintOrder, OrderFile, OrderStatus, PricingSettings } from '../src/types/print';
-import { dispatchOrderToTelegram, testTelegramConnection, isTelegramConfigured, downloadFileFromTelegram } from './telegram';
-import { createZipArchive } from './zip';
-import { runFileCleanup } from './cleanup';
-import { verifyPassword, verifyMasterRecoveryKey } from './auth';
+  fetchOrderByClientRequestId,
+  allocateQueueNumber,
+  allocateOrderId,
+  loadPricingSettings,
+  savePricingSettings,
+  loadShops,
+  saveShops,
+  deepMerge,
+  isUniqueViolation,
+  OrderPersistenceError
+} from './db.js';
+import { calculateFileSubtotal, calculateOrderPrice, calculateFilePricingBreakdown } from '../src/data/mockData.js';
+import { PrintOrder, OrderFile, OrderStatus, PricingSettings } from '../src/types/print.js';
+import { dispatchOrderToTelegram, testTelegramConnection, isTelegramConfigured, downloadFileFromTelegram } from './telegram.js';
+import { createZipArchive } from './zip.js';
+import { runFileCleanup } from './cleanup.js';
+import { verifyPassword, verifyMasterRecoveryKey } from './auth.js';
 
 const router = Router();
+
+function sendError(res: Response, status: number, code: string, message: string) {
+  return res.status(status).json({ success: false, error: { code, message } });
+}
+
+/** Strips server-only fields (disk paths, raw upload data) before an order leaves the API. */
+function toPublicOrder(order: PrintOrder): PrintOrder {
+  return {
+    ...order,
+    files: order.files.map(f => {
+      const { diskPath, fileData, ...rest } = f as any;
+      return rest as OrderFile;
+    }),
+  };
+}
+
+/** Validates a document's printing options against the admin-configured availability rules. */
+function validatePrintOptions(
+  o: { paperType: string; photoPaperSize?: string; duplex: string; borderless: boolean; quality: string },
+  pricing: PricingSettings
+): string | null {
+  const cfg = pricing.optionsConfig;
+  if (o.paperType === 'glossy') {
+    const size = (pricing.photoPaperSizes || []).find(sz => sz.id === o.photoPaperSize);
+    if (!size || !size.enabled) return 'The selected Photo Paper — Glossy size is not available.';
+    if (o.duplex === 'back_to_back' && !cfg?.allowBackToBackOnGlossy) return 'Back-to-Back is not available on Photo Paper — Glossy.';
+    if (o.borderless && !cfg?.allowBorderlessOnGlossy) return 'Borderless Printing is not available on Photo Paper — Glossy.';
+  } else if (o.borderless && !cfg?.allowBorderlessOnOrdinary) {
+    return 'Borderless Printing is not available on the selected paper.';
+  }
+  if (o.quality === 'high' && !cfg?.allowHighQuality) return 'High Quality is not currently available.';
+  return null;
+}
+
+function pricingIsValid(p: any): boolean {
+  const nums: any[] = [];
+  const walk = (v: any) => {
+    if (v && typeof v === 'object') Object.values(v).forEach(walk);
+    else if (typeof v === 'number') nums.push(v);
+  };
+  walk(p?.pagePrices); walk(p?.photoPaperPrices); walk(p?.surcharges); walk(p?.bindingPrices);
+  return nums.every(n => Number.isFinite(n) && n >= 0);
+}
 
 // Middleware: Admin Authentication
 async function requireAdmin(req: Request, res: Response, next: NextFunction) {
@@ -55,13 +107,16 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
 // ----------------------------------------------------------------------
 
 // 1. Get Shop & Pricing Settings
-router.get('/settings', (_req: Request, res: Response) => {
-  const db = getDatabase();
-  res.json({
-    pricing: db.pricing,
-    shops: db.shops,
-    telegramConfigured: isTelegramConfigured(),
-  });
+router.get('/settings', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json({
+      pricing: await loadPricingSettings(),
+      shops: await loadShops(),
+      telegramConfigured: isTelegramConfigured(),
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // 2. Submit New Print Order
@@ -87,7 +142,8 @@ router.post('/orders', async (req: Request, res: Response) => {
           orderId: existingOrder.id,
           queueNumber: existingOrder.queueNumber,
           trackingUrl: `/?tab=track&q=${existingOrder.id}&token=${existingOrder.trackingToken}`,
-          order: existingOrder,
+          order: toPublicOrder(existingOrder),
+          duplicate: true,
         });
       }
     }
@@ -114,8 +170,9 @@ router.post('/orders', async (req: Request, res: Response) => {
       });
     }
 
-    const db = getDatabase();
-    const shop = db.shops[0] || { name: 'Maxin Printing Service', acceptingOrders: true };
+    const pricing = await loadPricingSettings();
+    const shops = await loadShops();
+    const shop = shops[0] || { name: 'Maxin Printing Service', acceptingOrders: true };
 
     if (!shop.acceptingOrders) {
       return res.status(403).json({
@@ -170,6 +227,11 @@ router.post('/orders', async (req: Request, res: Response) => {
       const borderless = Boolean(f.borderless);
       const quality = f.quality === 'high' ? 'high' : 'standard';
 
+      const optionError = validatePrintOptions({ paperType, photoPaperSize, duplex, borderless, quality }, pricing);
+      if (optionError) {
+        return sendError(res, 400, 'INVALID_PRINT_OPTIONS', `${safeName}: ${optionError}`);
+      }
+
       // Authoritative Centralized Pricing Breakdown
       const breakdown = calculateFilePricingBreakdown({
         pages: pageCount,
@@ -181,7 +243,7 @@ router.post('/orders', async (req: Request, res: Response) => {
         duplex,
         borderless,
         quality,
-        pricing: db.pricing,
+        pricing,
       });
 
       processedFiles.push({
@@ -225,11 +287,11 @@ router.post('/orders', async (req: Request, res: Response) => {
         quality: pf.quality,
       })),
       binding: validBinding,
-      pricing: db.pricing,
+      pricing,
     });
 
-    const orderId = generateOrderId();
-    const queueNumber = generateQueueNumber(shopId);
+    const orderId = await allocateOrderId();
+    const queueNumber = await allocateQueueNumber();
     const trackingToken = generateTrackingToken();
     const nowIso = new Date().toISOString();
 
@@ -294,17 +356,31 @@ router.post('/orders', async (req: Request, res: Response) => {
       orderId: newOrder.id,
       queueNumber: newOrder.queueNumber,
       trackingUrl: `/?tab=track&q=${newOrder.id}&token=${newOrder.trackingToken}`,
-      order: newOrder,
+      order: toPublicOrder(newOrder),
     });
   } catch (err: any) {
+    // Concurrent duplicate submit (same clientRequestId): return the order that won the race
+    if (isUniqueViolation(err) && typeof req.body?.clientRequestId === 'string') {
+      try {
+        const existing = await fetchOrderByClientRequestId(req.body.clientRequestId.trim());
+        if (existing) {
+          return res.status(200).json({
+            success: true,
+            orderId: existing.id,
+            queueNumber: existing.queueNumber,
+            trackingUrl: `/?tab=track&q=${existing.id}&token=${existing.trackingToken}`,
+            order: toPublicOrder(existing),
+            duplicate: true,
+          });
+        }
+      } catch (_) { /* fall through to generic error */ }
+    }
     console.error('[API] Error creating order:', err);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'ORDER_SUBMISSION_FAILED',
-        message: err.message || 'Unable to submit your order. Please try again.',
-      },
-    });
+    if (err instanceof OrderPersistenceError) {
+      return sendError(res, 503, err.code, err.message);
+    }
+    // Never echo err.message: it can contain database details.
+    return sendError(res, 500, 'ORDER_SUBMISSION_FAILED', 'Unable to submit your order. Please try again.');
   }
 });
 
@@ -330,7 +406,7 @@ router.get('/orders/track', async (req: Request, res: Response) => {
   // If verified by token or phone, return full details
   if (isVerified) {
     return res.json({
-      order,
+      order: toPublicOrder(order),
       verified: true,
     });
   }
@@ -364,13 +440,13 @@ router.get('/orders/track', async (req: Request, res: Response) => {
       paperSize: f.paperSize,
       paperType: f.paperType || 'ordinary',
       photoPaperSize: f.photoPaperSize,
-      borderless: f.borderless ?? false,
-      quality: f.quality || 'standard',
-      baseCost: f.baseCost ?? f.subtotal,
-      surcharges: f.surcharges || { duplex: 0, borderless: 0, quality: 0, total: 0 },
       printType: f.printType,
       orientation: f.orientation,
       duplex: f.duplex,
+      borderless: f.borderless ?? false,
+      quality: f.quality || 'standard',
+      baseCost: f.baseCost ?? f.subtotal,
+      surcharges: f.surcharges || { backToBack: 0, borderless: 0, quality: 0 },
       subtotal: f.subtotal,
       telegramStatus: f.telegramStatus,
       isDeletedFromDisk: f.isDeletedFromDisk,
@@ -781,21 +857,31 @@ router.get('/admin/export-csv', requireAdmin, async (_req: Request, res: Respons
 });
 
 // 20. Admin: Update Pricing & Shop Settings
-router.patch('/admin/settings', requireAdmin, (req: Request, res: Response) => {
-  const { pricing, shops } = req.body;
-  const db = getDatabase();
+router.patch('/admin/settings', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { pricing, shops } = req.body || {};
+    let currentPricing = await loadPricingSettings();
+    let currentShops = await loadShops();
 
-  if (pricing && typeof pricing === 'object') {
-    db.pricing = { ...db.pricing, ...pricing };
+    if (pricing && typeof pricing === 'object') {
+      const merged = deepMerge<PricingSettings>(currentPricing, pricing);
+      if (!pricingIsValid(merged)) {
+        return sendError(res, 400, 'INVALID_PRICING', 'Prices and surcharges must be zero or positive numbers.');
+      }
+      await savePricingSettings(merged);
+      currentPricing = merged;
+    }
+
+    if (Array.isArray(shops)) {
+      await saveShops(shops);
+      currentShops = shops;
+    }
+
+    logAudit('admin', 'SETTINGS_UPDATED', 'Updated shop pricing or accepting order statuses.');
+    res.json({ success: true, pricing: currentPricing, shops: currentShops });
+  } catch (err) {
+    next(err);
   }
-
-  if (Array.isArray(shops)) {
-    db.shops = shops;
-  }
-
-  saveDatabase(db);
-  logAudit('admin', 'SETTINGS_UPDATED', 'Updated shop pricing or accepting order statuses.');
-  res.json({ success: true, pricing: db.pricing, shops: db.shops });
 });
 
 // 21. Telegram: Status & Real Test Ping

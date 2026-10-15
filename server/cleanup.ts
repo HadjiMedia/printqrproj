@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { getDatabase, saveDatabase, getUploadsDir, logAudit } from './db';
+import { getDatabase, saveDatabase, getUploadsDir, logAudit } from './db.js';
 
 const RECOVERY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 const ORPHAN_AGE_MS = 2 * 60 * 60 * 1000;       // 2 hours
