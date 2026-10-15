@@ -58,15 +58,35 @@ export function getUploadsDir(): string {
   return UPLOADS_DIR;
 }
 
+/**
+ * Accept the standard database URL names used by Neon and Vercel integrations.
+ * DATABASE_URL remains the preferred name; no connection string is logged.
+ */
+function getDatabaseConnectionString(): string | null {
+  const candidates = [
+    process.env.DATABASE_URL,
+    process.env.POSTGRES_URL,
+    process.env.POSTGRES_URL_NON_POOLING,
+    process.env.DATABASE_URL_UNPOOLED,
+    process.env.NEON_DATABASE_URL,
+  ];
+
+  return candidates.find(
+    (value): value is string =>
+      typeof value === 'string' && value.trim().startsWith('postgres')
+  )?.trim() || null;
+}
+
 export function isNeonConfigured(): boolean {
-  return Boolean(process.env.DATABASE_URL && process.env.DATABASE_URL.trim().startsWith('postgres'));
+  return Boolean(getDatabaseConnectionString());
 }
 
 export function getPgPool(): Pool | null {
-  if (!isNeonConfigured()) return null;
+  const connectionString = getDatabaseConnectionString();
+  if (!connectionString) return null;
   if (!pgPool) {
     pgPool = new Pool({
-      connectionString: process.env.DATABASE_URL!.trim(),
+      connectionString,
       // Bound connection acquisition and query time so a stalled Neon connection
       // produces a controlled API error instead of hanging a Vercel invocation.
       max: 3,
@@ -86,7 +106,7 @@ export function getPgPool(): Pool | null {
 function requirePersistentSettingsStore(): void {
   if (isServerless && !getPgPool()) {
     const error = new Error(
-      'Persistent settings are not configured. Add DATABASE_URL to the Vercel project environment variables, then redeploy.'
+      'Persistent settings are not configured. Add DATABASE_URL (or a supported PostgreSQL URL variable) to the Vercel project environment variables, then redeploy.'
     ) as Error & { status?: number; code?: string };
     error.status = 503;
     error.code = 'DATABASE_NOT_CONFIGURED';
