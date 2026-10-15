@@ -60,8 +60,23 @@ export function getUploadsDir(): string {
 
 /**
  * Accept the standard database URL names used by Neon and Vercel integrations.
- * DATABASE_URL remains the preferred name; no connection string is logged.
+ * Also tolerate a URL pasted with surrounding quote characters from a .env example.
+ * Never log the connection string because it contains database credentials.
  */
+function normalizeDatabaseConnectionString(value: string | undefined): string | null {
+  if (typeof value !== 'string') return null;
+
+  let normalized = value.trim();
+  if (
+    (normalized.startsWith('"') && normalized.endsWith('"')) ||
+    (normalized.startsWith("'") && normalized.endsWith("'"))
+  ) {
+    normalized = normalized.slice(1, -1).trim();
+  }
+
+  return /^postgres(?:ql)?:\/\//i.test(normalized) ? normalized : null;
+}
+
 function getDatabaseConnectionString(): string | null {
   const candidates = [
     process.env.DATABASE_URL,
@@ -71,10 +86,11 @@ function getDatabaseConnectionString(): string | null {
     process.env.NEON_DATABASE_URL,
   ];
 
-  return candidates.find(
-    (value): value is string =>
-      typeof value === 'string' && value.trim().startsWith('postgres')
-  )?.trim() || null;
+  for (const candidate of candidates) {
+    const normalized = normalizeDatabaseConnectionString(candidate);
+    if (normalized) return normalized;
+  }
+  return null;
 }
 
 export function isNeonConfigured(): boolean {
