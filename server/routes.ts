@@ -89,18 +89,22 @@ function pricingIsValid(p: any): boolean {
 
 // Middleware: Admin Authentication
 async function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  try {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
 
-  if (!token) {
-    return res.status(401).json({ error: 'Unauthorized: Admin session token required.' });
-  }
+    if (!token) {
+      return res.status(401).json({ error: 'Unauthorized: Admin session token required.' });
+    }
 
-  const isValid = await verifyAdminSession(token);
-  if (!isValid) {
-    return res.status(401).json({ error: 'Unauthorized: Session expired or invalid.' });
+    const isValid = await verifyAdminSession(token);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Unauthorized: Session expired or invalid.' });
+    }
+    return next();
+  } catch (err) {
+    return next(err);
   }
-  next();
 }
 
 // ----------------------------------------------------------------------
@@ -747,22 +751,27 @@ router.get('/admin/orders', requireAdmin, async (req: Request, res: Response) =>
 });
 
 // 14. Admin: Update Order Status
-router.patch('/admin/orders/:id/status', requireAdmin, async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { status, note, staffName = 'staff' } = req.body;
+router.patch('/admin/orders/:id/status', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    const { status, note, staffName = 'staff' } = req.body;
 
-  const validStatuses: OrderStatus[] = ['waiting', 'printing', 'ready', 'completed', 'cancelled'];
-  if (!validStatuses.includes(status)) {
-    return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+    const validStatuses: OrderStatus[] = ['waiting', 'printing', 'ready', 'completed', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+    }
+
+    const updated = await updateOrderStatus(id, status, note, staffName);
+    if (!updated) {
+      return res.status(404).json({ error: 'Order not found.' });
+    }
+
+    logAudit(staffName, 'STATUS_CHANGE', `Order ${id} updated to ${status}`);
+    return res.json({ success: true, order: updated });
+  } catch (err) {
+    console.error('[API] Failed to synchronize order status:', err);
+    return next(err);
   }
-
-  const updated = await updateOrderStatus(id, status, note, staffName);
-  if (!updated) {
-    return res.status(404).json({ error: 'Order not found.' });
-  }
-
-  logAudit(staffName, 'STATUS_CHANGE', `Order ${id} updated to ${status}`);
-  res.json({ success: true, order: updated });
 });
 
 // 15. Admin: Retry Telegram Delivery
