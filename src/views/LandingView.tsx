@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { 
   FileUp, 
   QrCode, 
@@ -15,16 +15,38 @@ import {
   Sparkles,
   Smartphone
 } from 'lucide-react';
-import { MAXIN_SHOP } from '../data/mockData';
+import { MAXIN_SHOP, DEFAULT_PRICING } from '../data/mockData';
 import { QRCodeDisplay } from '../components/QRCodeDisplay';
+import { PricingSettings, ShopLocation } from '../types/print';
+import { fetchSettings } from '../services/api';
 
 interface LandingViewProps {
   onNavigate: (tab: string, param?: string) => void;
+  pricing?: PricingSettings;
+  shop?: ShopLocation;
 }
 
-export function LandingView({ onNavigate }: LandingViewProps) {
+export function LandingView({ onNavigate, pricing: propPricing, shop: propShop }: LandingViewProps) {
   const [trackInput, setTrackInput] = useState('');
   const [showQrModal, setShowQrModal] = useState(false);
+  const [livePricing, setLivePricing] = useState<PricingSettings>(propPricing || DEFAULT_PRICING);
+  const [liveShop, setLiveShop] = useState<ShopLocation>(propShop || MAXIN_SHOP);
+
+  useEffect(() => {
+    if (propPricing) setLivePricing(propPricing);
+    if (propShop) setLiveShop(propShop);
+  }, [propPricing, propShop]);
+
+  useEffect(() => {
+    fetchSettings().then(res => {
+      if (res.pricing) setLivePricing(res.pricing);
+      if (res.shops && res.shops.length > 0) setLiveShop(res.shops[0]);
+    }).catch(() => {});
+  }, []);
+
+  const pricing = livePricing;
+  const shop = liveShop;
+  const shopOrderUrl = `${window.location.origin}/?tab=order`;
 
   const handleTrackSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,8 +54,6 @@ export function LandingView({ onNavigate }: LandingViewProps) {
       onNavigate('track', trackInput.trim());
     }
   };
-
-  const shopOrderUrl = `${window.location.origin}/?tab=order`;
 
   return (
     <div className="space-y-16 pb-16">
@@ -117,11 +137,16 @@ export function LandingView({ onNavigate }: LandingViewProps) {
                     <span className="text-[11px] font-bold text-[#23664B] uppercase tracking-wider">
                       Official Counter Kiosk
                     </span>
-                    <h3 className="font-bold text-base text-[#20352A] mt-0.5">{MAXIN_SHOP.name}</h3>
+                    <h3 className="font-bold text-base text-[#20352A] mt-0.5">{shop.name}</h3>
                   </div>
-                  <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-[#eef4f1] text-[#23664B]">
-                    ~{MAXIN_SHOP.avgWaitMins} min wait
-                  </span>
+                  <div className="flex flex-col items-end gap-1">
+                    <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-[#eef4f1] text-[#23664B]">
+                      ~{shop.avgWaitMins} min wait
+                    </span>
+                    <span className="text-[10px] text-[#5A6E64] font-medium">
+                      {shop.activeQueueCount} order{shop.activeQueueCount === 1 ? '' : 's'} in queue
+                    </span>
+                  </div>
                 </div>
 
                 {/* QR Display */}
@@ -129,24 +154,24 @@ export function LandingView({ onNavigate }: LandingViewProps) {
                   <QRCodeDisplay
                     value={shopOrderUrl}
                     size={180}
-                    label="MAXIN PRINTING SERVICE"
+                    label={shop.name.toUpperCase()}
                     sublabel="Point camera to open upload page"
                     showActions={false}
                   />
 
                   <div className="mt-4 text-center space-y-1">
                     <p className="text-xs text-[#5A6E64]">
-                      {MAXIN_SHOP.address}
+                      {shop.address}
                     </p>
                     <p className="text-[11px] font-medium text-[#20352A]">
-                      {MAXIN_SHOP.counterInfo}
+                      {shop.counterInfo}
                     </p>
                   </div>
                 </div>
 
                 {/* Bottom Action */}
                 <div className="pt-4 border-t border-[#E2E7E2] flex items-center justify-between text-xs">
-                  <span className="text-[#5A6E64]">Store open: {MAXIN_SHOP.hours}</span>
+                  <span className="text-[#5A6E64]">Store open: {shop.hours}</span>
                   <button
                     type="button"
                     onClick={() => onNavigate('order')}
@@ -167,7 +192,7 @@ export function LandingView({ onNavigate }: LandingViewProps) {
         <div className="text-center max-w-2xl mx-auto mb-10">
           <p className="text-xs font-bold uppercase tracking-wider text-[#23664B]">Frictionless Workflow</p>
           <h2 className="text-2xl sm:text-3xl font-extrabold text-[#20352A] mt-1">
-            How Maxin Printing Service works
+            How {shop.name} works
           </h2>
           <p className="text-sm text-[#5A6E64] mt-2">
             No registration or account creation required. Just scan or upload, configure, and collect at the counter.
@@ -182,7 +207,7 @@ export function LandingView({ onNavigate }: LandingViewProps) {
             </div>
             <h3 className="font-bold text-base text-[#20352A]">Upload & Configure</h3>
             <p className="text-xs sm:text-sm text-[#5A6E64] mt-2 leading-relaxed">
-              Drop your PDF, Word DOCX, or photos. Choose color vs B&W, paper size (Letter, A4, Legal), duplex options, and copies.
+              Drop your PDF, Word DOCX, or images. Choose Ordinary paper (Letter, A4, Legal, A3) or Photo Paper — Glossy (4R, 5R, A4), Single-Sided or Back-to-Back, and optional Borderless Printing.
             </p>
             <div className="mt-4 pt-3 border-t border-[#F7F8F5] flex items-center gap-2 text-xs font-medium text-[#23664B]">
               <Smartphone className="w-3.5 h-3.5" />
@@ -226,7 +251,7 @@ export function LandingView({ onNavigate }: LandingViewProps) {
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="text-center max-w-xl mx-auto mb-8">
           <p className="text-xs font-bold uppercase tracking-wider text-[#23664B]">Transparent Rates</p>
-          <h2 className="text-2xl font-bold text-[#20352A] mt-1">Simple & Affordable Pricing</h2>
+          <h2 className="text-2xl font-bold text-[#20352A] mt-1">Live & Synchronized Pricing</h2>
           <p className="text-xs sm:text-sm text-[#5A6E64] mt-1">
             Real-time price calculation before you submit your file in Philippine Pesos (₱).
           </p>
@@ -235,7 +260,7 @@ export function LandingView({ onNavigate }: LandingViewProps) {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-white p-5 rounded-2xl border border-[#D4DDD5] text-center space-y-2">
             <span className="text-xs font-bold text-[#5A6E64] uppercase tracking-wider">Short / Letter</span>
-            <p className="text-2xl font-extrabold text-[#20352A]">₱3.00 <span className="text-xs font-normal text-[#5A6E64]">/ B&W (₱6 Color)</span></p>
+            <p className="text-2xl font-extrabold text-[#20352A]">₱{pricing.pagePrices.Letter.bw}.00 <span className="text-xs font-normal text-[#5A6E64]">/ B&W (₱{pricing.pagePrices.Letter.color} Color)</span></p>
             <p className="text-[11px] text-[#5A6E64]">Resumes, assignments, questionnaires, school forms</p>
           </div>
 
@@ -244,20 +269,44 @@ export function LandingView({ onNavigate }: LandingViewProps) {
               Standard
             </div>
             <span className="text-xs font-bold text-[#23664B] uppercase tracking-wider">A4 Standard</span>
-            <p className="text-2xl font-extrabold text-[#20352A]">₱5.00 <span className="text-xs font-normal text-[#5A6E64]">/ B&W (₱8 Color)</span></p>
+            <p className="text-2xl font-extrabold text-[#20352A]">₱{pricing.pagePrices.A4.bw}.00 <span className="text-xs font-normal text-[#5A6E64]">/ B&W (₱{pricing.pagePrices.A4.color} Color)</span></p>
             <p className="text-[11px] text-[#5A6E64]">Business presentations, thesis reports, certificates</p>
           </div>
 
           <div className="bg-white p-5 rounded-2xl border border-[#D4DDD5] text-center space-y-2">
             <span className="text-xs font-bold text-[#5A6E64] uppercase tracking-wider">Long / Legal</span>
-            <p className="text-2xl font-extrabold text-[#20352A]">₱7.00 <span className="text-xs font-normal text-[#5A6E64]">/ B&W (₱10 Color)</span></p>
+            <p className="text-2xl font-extrabold text-[#20352A]">₱{pricing.pagePrices.Legal.bw}.00 <span className="text-xs font-normal text-[#5A6E64]">/ B&W (₱{pricing.pagePrices.Legal.color} Color)</span></p>
             <p className="text-[11px] text-[#5A6E64]">Legal documents, contracts, accounting ledgers</p>
           </div>
 
           <div className="bg-white p-5 rounded-2xl border border-[#D4DDD5] text-center space-y-2">
-            <span className="text-xs font-bold text-[#5A6E64] uppercase tracking-wider">Binding & Extras</span>
-            <p className="text-2xl font-extrabold text-[#20352A]">From ₱5.00</p>
-            <p className="text-[11px] text-[#5A6E64]">Corner staple ₱5.00 • Spiral coil ₱35.00 • Booklet fold ₱45.00</p>
+            <span className="text-xs font-bold text-[#5A6E64] uppercase tracking-wider">A3 Large Paper</span>
+            <p className="text-2xl font-extrabold text-[#20352A]">₱{pricing.pagePrices.A3?.bw ?? 12}.00 <span className="text-xs font-normal text-[#5A6E64]">/ B&W (₱{pricing.pagePrices.A3?.color ?? 20} Color)</span></p>
+            <p className="text-[11px] text-[#5A6E64]">Architectural plans, engineering schematics, posters</p>
+          </div>
+
+          <div className="bg-white p-5 rounded-2xl border border-[#D4DDD5] text-center space-y-2">
+            <span className="text-xs font-bold text-[#5A6E64] uppercase tracking-wider">Photo Paper — Glossy</span>
+            <p className="text-2xl font-extrabold text-[#20352A]">From ₱{pricing.photoPaperPrices?.glossy?.bw ?? 25}.00</p>
+            <p className="text-[11px] text-[#5A6E64]">4R (4×6 in), 5R (5×7 in), and A4 Photo Glossy</p>
+          </div>
+
+          <div className="bg-white p-5 rounded-2xl border border-[#D4DDD5] text-center space-y-2">
+            <span className="text-xs font-bold text-[#5A6E64] uppercase tracking-wider">Back-to-Back (Duplex)</span>
+            <p className="text-2xl font-extrabold text-[#20352A]">+{pricing.surcharges?.backToBack ? `₱${pricing.surcharges.backToBack}.00` : '₱5.00'}</p>
+            <p className="text-[11px] text-[#5A6E64]">Per document printing job on supported ordinary paper</p>
+          </div>
+
+          <div className="bg-white p-5 rounded-2xl border border-[#D4DDD5] text-center space-y-2">
+            <span className="text-xs font-bold text-[#5A6E64] uppercase tracking-wider">Borderless Printing</span>
+            <p className="text-2xl font-extrabold text-[#20352A]">+{pricing.surcharges?.borderless ? `₱${pricing.surcharges.borderless}.00` : '₱5.00'}</p>
+            <p className="text-[11px] text-[#5A6E64]">Full-bleed edge-to-edge printing per document</p>
+          </div>
+
+          <div className="bg-white p-5 rounded-2xl border border-[#D4DDD5] text-center space-y-2">
+            <span className="text-xs font-bold text-[#5A6E64] uppercase tracking-wider">Binding & Finishing</span>
+            <p className="text-2xl font-extrabold text-[#20352A]">From ₱{pricing.bindingPrices?.staple ?? 5}.00</p>
+            <p className="text-[11px] text-[#5A6E64]">Staple ₱{pricing.bindingPrices?.staple ?? 5}.00 • Spiral ₱{pricing.bindingPrices?.spiral ?? 35}.00 • Booklet ₱{pricing.bindingPrices?.booklet ?? 45}.00</p>
           </div>
         </div>
       </section>
@@ -269,7 +318,7 @@ export function LandingView({ onNavigate }: LandingViewProps) {
             <div className="flex items-center justify-between pb-2 border-b border-[#E2E7E2]">
               <div className="flex items-center gap-2">
                 <Store className="w-4 h-4 text-[#23664B]" />
-                <h3 className="font-bold text-sm text-[#20352A]">{MAXIN_SHOP.name}</h3>
+                <h3 className="font-bold text-sm text-[#20352A]">{shop.name}</h3>
               </div>
               <button
                 type="button"
