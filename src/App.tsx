@@ -44,10 +44,14 @@ export default function App() {
       try {
         const params = new URLSearchParams(window.location.search);
         const tab = params.get('tab');
-        const order = params.get('order');
+        // Accept both the app's "order" parameter and the API's "q" tracking link.
+        const order = params.get('order') || params.get('q');
+        const token = params.get('token');
 
         if (order) {
-          setTrackOrderId(order);
+          // TrackView expects the token alongside the order ID so the receipt can
+          // retrieve the full, verified record and continue polling live status.
+          setTrackOrderId(token ? `${order}&token=${token}` : order);
           setCurrentTab('track');
         } else if (tab && ['landing', 'order', 'track', 'qr', 'admin'].includes(tab)) {
           setCurrentTab(tab);
