@@ -74,7 +74,22 @@ function normalizeDatabaseConnectionString(value: string | undefined): string | 
     normalized = normalized.slice(1, -1).trim();
   }
 
-  return /^postgres(?:ql)?:\/\//i.test(normalized) ? normalized : null;
+  if (!/^postgres(?:ql)?:\/\//i.test(normalized)) return null;
+
+  // Never accept a documentation/sample URL as a live database connection.
+  // A placeholder DATABASE_URL must not mask a real POSTGRES_URL provided by
+  // a Vercel/Neon integration.
+  try {
+    const parsed = new URL(normalized);
+    const host = parsed.hostname.toLowerCase();
+    const isExampleHost = host === 'example.com' || host.endsWith('.example.com');
+    const isSampleCredentials = parsed.username === 'user' && parsed.password === 'pass';
+    if (isExampleHost || isSampleCredentials) return null;
+  } catch {
+    return null;
+  }
+
+  return normalized;
 }
 
 function getDatabaseConnectionString(): string | null {
