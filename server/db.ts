@@ -73,6 +73,21 @@ export function getPgPool(): Pool | null {
 }
 
 /**
+ * Vercel functions have disposable filesystems and separate instances. Never
+ * pretend settings were saved to the local JSON cache when Neon is unavailable.
+ */
+function requirePersistentSettingsStore(): void {
+  if (isServerless && !getPgPool()) {
+    const error = new Error(
+      'Persistent settings are not configured. Add DATABASE_URL to the Vercel project environment variables, then redeploy.'
+    ) as Error & { status?: number; code?: string };
+    error.status = 503;
+    error.code = 'DATABASE_NOT_CONFIGURED';
+    throw error;
+  }
+}
+
+/**
  * Initializes Neon PostgreSQL tables or creates local JSON DB fallback.
  */
 export async function initDatabase(): Promise<DatabaseSchema> {
@@ -1065,35 +1080,47 @@ async function writeSetting(key: string, value: any): Promise<void> {
 
 /** Stored admin pricing merged over defaults, so existing valid admin prices are preserved and new fields get defaults. */
 export async function loadPricingSettings(): Promise<PricingSettings> {
-  if (!getPgPool()) return getDatabase().pricing;
+  const pool = getPgPool();
+  if (!pool) {
+    requirePersistentSettingsStore();
+    return getDatabase().pricing;
+  }
   const stored = await readSetting('pricing');
   return deepMerge<PricingSettings>(DEFAULT_PRICING, stored || {});
 }
 
 export async function savePricingSettings(pricing: PricingSettings): Promise<void> {
-  if (getPgPool()) {
-    await writeSetting('pricing', pricing);
-  } else {
+  const pool = getPgPool();
+  if (!pool) {
+    requirePersistentSettingsStore();
     const localDb = getDatabase();
     localDb.pricing = pricing;
     saveDatabase(localDb);
+    return;
   }
+  await writeSetting('pricing', pricing);
 }
 
 export async function loadShops(): Promise<ShopLocation[]> {
-  if (!getPgPool()) return getDatabase().shops;
+  const pool = getPgPool();
+  if (!pool) {
+    requirePersistentSettingsStore();
+    return getDatabase().shops;
+  }
   const stored = await readSetting('shops');
   return Array.isArray(stored) && stored.length > 0 ? stored : [MAXIN_SHOP];
 }
 
 export async function saveShops(shops: ShopLocation[]): Promise<void> {
-  if (getPgPool()) {
-    await writeSetting('shops', shops);
-  } else {
+  const pool = getPgPool();
+  if (!pool) {
+    requirePersistentSettingsStore();
     const localDb = getDatabase();
     localDb.shops = shops;
     saveDatabase(localDb);
+    return;
   }
+  await writeSetting('shops', shops);
 }
 
 // ====================================================================
