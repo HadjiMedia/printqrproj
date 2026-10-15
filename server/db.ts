@@ -67,6 +67,13 @@ export function getPgPool(): Pool | null {
   if (!pgPool) {
     pgPool = new Pool({
       connectionString: process.env.DATABASE_URL!.trim(),
+      // Bound connection acquisition and query time so a stalled Neon connection
+      // produces a controlled API error instead of hanging a Vercel invocation.
+      max: 3,
+      idleTimeoutMillis: 10_000,
+      connectionTimeoutMillis: 7_000,
+      query_timeout: 15_000,
+      statement_timeout: 12_000,
     });
   }
   return pgPool;
@@ -759,6 +766,11 @@ export async function updateOrderStatus(
   const pool = getPgPool();
 
   if (pool) {
+    // Read the full current order before the write so we can return the receipt
+    // data without performing another database request after COMMIT.
+    const currentOrder = await fetchOrderById(orderId);
+    if (!currentOrder) return null;
+
     let client: any;
     try {
       if (!isPgInitialized) await initNeonSchema();
@@ -794,20 +806,30 @@ export async function updateOrderStatus(
       );
       await client.query('COMMIT');
 
-      // Always return the canonical database version, not this function instance's cache.
-      return await fetchOrderById(orderId);
+      // Use the preloaded canonical order plus the committed status. This avoids
+      // a slow read-after-write request that could time out after saving the status.
+      currentOrder.status = status;
+      currentOrder.statusMessage = note || `Status updated to ${status}`;
+      currentOrder.updatedAt = timestamp;
+      if (status === 'completed') currentOrder.completedAt = timestamp;
+      currentOrder.statusHistory = currentOrder.statusHistory || [];
+      currentOrder.statusHistory.unshift({
+        status,
+        timestamp,
+        changedBy: staffName,
+        note,
+      });
+      return currentOrder;
     } catch (err: any) {
       if (client) {
         try { await client.query('ROLLBACK'); } catch (_) {}
       }
       console.error('[DB] Durable order-status update failed:', err);
       if (err instanceof OrderPersistenceError) throw err;
-      const persistenceError = new OrderPersistenceError(
+      throw new OrderPersistenceError(
         'DATABASE_UNAVAILABLE',
         'Could not synchronize the order status with the database. Please try again.'
-      ) as OrderPersistenceError & { status?: number };
-      persistenceError.status = 503;
-      throw persistenceError;
+      );
     } finally {
       if (client) client.release();
     }
