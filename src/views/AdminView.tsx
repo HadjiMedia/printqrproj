@@ -40,7 +40,8 @@ import {
   updateSettingsApi,
   getFileDownloadUrl,
   getZipDownloadUrl,
-  submitOrder
+  submitOrder,
+  fetchSettings
 } from '../services/api';
 import { SHOPS, formatBytes, DEFAULT_PRICING } from '../data/mockData';
 import { StatusBadge } from '../components/StatusBadge';
@@ -49,11 +50,13 @@ import { TelegramPanel } from '../components/TelegramPanel';
 interface AdminViewProps {
   isAdminLoggedIn: boolean;
   onLoginChange: (status: boolean) => void;
+  onSettingsSaved?: () => void;
 }
 
 export function AdminView({
   isAdminLoggedIn,
   onLoginChange,
+  onSettingsSaved,
 }: AdminViewProps) {
   // Login form state
   const [username, setUsername] = useState('staff');
@@ -130,6 +133,13 @@ export function AdminView({
       return () => clearInterval(interval);
     }
   }, [isAdminLoggedIn, activeTab, searchQuery]);
+
+  // Synchronize persisted pricing settings from Neon database
+  useEffect(() => {
+    fetchSettings().then(res => {
+      if (res.pricing) setPricing(res.pricing);
+    }).catch(() => {});
+  }, [isAdminLoggedIn, activeTab]);
 
   // Handle Login
   const handleLoginSubmit = async (e: React.FormEvent) => {
@@ -216,7 +226,13 @@ export function AdminView({
   const handleSavePricing = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await updateSettingsApi({ pricing });
+      const res = await updateSettingsApi({ pricing });
+      if (res && res.pricing) {
+        setPricing(res.pricing);
+      }
+      if (onSettingsSaved) {
+        onSettingsSaved();
+      }
       showFlash('Pricing rate card updated and applied to all incoming orders.');
     } catch (err: any) {
       alert(err.message);
