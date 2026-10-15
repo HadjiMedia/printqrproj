@@ -493,6 +493,11 @@ export async function fetchAllOrders(filter?: {
       }));
     } catch (err) {
       console.error('[DB] Error querying orders from Neon:', err);
+      if (isServerless) {
+        const persistenceError = new OrderPersistenceError('DATABASE_UNAVAILABLE', 'Order data could not be synchronized with the database. Please try again.') as OrderPersistenceError & { status?: number };
+        persistenceError.status = 503;
+        throw persistenceError;
+      }
     }
   }
 
@@ -592,6 +597,11 @@ export async function fetchOrderById(id: string): Promise<PrintOrder | null> {
       }
     } catch (err) {
       console.error('[DB] Error querying order by ID from Neon:', err);
+      if (isServerless) {
+        const persistenceError = new OrderPersistenceError('DATABASE_UNAVAILABLE', 'Order data could not be synchronized with the database. Please try again.') as OrderPersistenceError & { status?: number };
+        persistenceError.status = 503;
+        throw persistenceError;
+      }
     }
   }
 
@@ -729,43 +739,84 @@ export async function updateOrderStatus(
   const pool = getPgPool();
 
   if (pool) {
+    let client: any;
     try {
-      await pool.query(
+      if (!isPgInitialized) await initNeonSchema();
+      if (!isPgInitialized) {
+        throw new OrderPersistenceError(
+          'DATABASE_UNAVAILABLE',
+          'Order storage is temporarily unavailable. Please try again.'
+        );
+      }
+
+      client = await pool.connect();
+      await client.query('BEGIN');
+      const result = await client.query(
         `UPDATE printdrop_orders
-         SET status = $1, status_message = $2, updated_at = $3, completed_at = CASE WHEN $1 = 'completed' THEN $3 ELSE completed_at END
-         WHERE id = $4`,
+         SET status = $1,
+             status_message = $2,
+             updated_at = $3,
+             completed_at = CASE WHEN $1 = 'completed' THEN $3 ELSE completed_at END
+         WHERE id = $4
+         RETURNING id`,
         [status, note || `Status updated to ${status}`, timestamp, orderId]
       );
 
-      await pool.query(
+      if (!result.rowCount) {
+        await client.query('ROLLBACK');
+        return null;
+      }
+
+      await client.query(
         `INSERT INTO printdrop_status_history (order_id, status, timestamp, changed_by, note)
          VALUES ($1, $2, $3, $4, $5)`,
-        [orderId, status, timestamp, staffName, note]
+        [orderId, status, timestamp, staffName, note ?? null]
       );
-    } catch (err) {
-      console.error('[DB] Error updating status in Neon:', err);
+      await client.query('COMMIT');
+
+      // Always return the canonical database version, not this function instance's cache.
+      return await fetchOrderById(orderId);
+    } catch (err: any) {
+      if (client) {
+        try { await client.query('ROLLBACK'); } catch (_) {}
+      }
+      console.error('[DB] Durable order-status update failed:', err);
+      if (err instanceof OrderPersistenceError) throw err;
+      const persistenceError = new OrderPersistenceError(
+        'DATABASE_UNAVAILABLE',
+        'Could not synchronize the order status with the database. Please try again.'
+      ) as OrderPersistenceError & { status?: number };
+      persistenceError.status = 503;
+      throw persistenceError;
+    } finally {
+      if (client) client.release();
     }
   }
 
-  // Sync cache
-  const db = getDatabase();
-  const order = db.orders.find(o => o.id === orderId);
-  if (order) {
-    order.status = status;
-    order.statusMessage = note || `Status updated to ${status}`;
-    order.updatedAt = timestamp;
-    if (status === 'completed') order.completedAt = timestamp;
-    order.statusHistory.unshift({
-      status,
-      timestamp,
-      changedBy: staffName,
-      note,
-    });
-    saveDatabase(db);
-    return order;
+  if (isServerless) {
+    throw new OrderPersistenceError(
+      'DATABASE_NOT_CONFIGURED',
+      'Order storage is not configured on the server. Please contact Maxin counter staff.'
+    );
   }
 
-  return fetchOrderById(orderId);
+  // Local development only: JSON file store.
+  const db = getDatabase();
+  const order = db.orders.find(o => o.id === orderId);
+  if (!order) return null;
+
+  order.status = status;
+  order.statusMessage = note || `Status updated to ${status}`;
+  order.updatedAt = timestamp;
+  if (status === 'completed') order.completedAt = timestamp;
+  order.statusHistory.unshift({
+    status,
+    timestamp,
+    changedBy: staffName,
+    note,
+  });
+  saveDatabase(db);
+  return order;
 }
 
 export async function deleteOrder(orderId: string): Promise<boolean> {
