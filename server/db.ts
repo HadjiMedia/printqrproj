@@ -632,6 +632,9 @@ export async function fetchOrderByClientRequestId(clientRequestId: string): Prom
       }
     } catch (err) {
       console.warn('[DB] Error checking client_request_id in Neon:', err);
+      if (isServerless) {
+        throw new OrderPersistenceError('DATABASE_UNAVAILABLE', 'Order data could not be synchronized with the database. Please try again.');
+      }
     }
   }
 
@@ -642,9 +645,12 @@ export async function fetchOrderByClientRequestId(clientRequestId: string): Prom
 
 export class OrderPersistenceError extends Error {
   code: string;
-  constructor(code: string, message: string) {
+  status: number;
+  constructor(code: string, message: string, status = 503) {
     super(message);
+    this.name = 'OrderPersistenceError';
     this.code = code;
+    this.status = status;
   }
 }
 
