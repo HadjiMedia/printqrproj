@@ -93,6 +93,9 @@ function normalizeDatabaseConnectionString(value: string | undefined): string | 
 }
 
 function getDatabaseConnectionString(): string | null {
+  // Read at request time so the deployed serverless runtime uses the current
+  // Production environment configuration after a redeploy. Never hardcode DB
+  // credentials here; keep the connection string in Vercel's encrypted env.
   // Vercel/Neon integrations expose different names depending on the
   // integration version and whether the URL is pooled or direct.
   const candidates = [
