@@ -93,12 +93,20 @@ function normalizeDatabaseConnectionString(value: string | undefined): string | 
 }
 
 function getDatabaseConnectionString(): string | null {
+  // Vercel/Neon integrations expose different names depending on the
+  // integration version and whether the URL is pooled or direct.
   const candidates = [
     process.env.DATABASE_URL,
     process.env.POSTGRES_URL,
     process.env.POSTGRES_URL_NON_POOLING,
     process.env.DATABASE_URL_UNPOOLED,
     process.env.NEON_DATABASE_URL,
+    process.env.NEON_DATABASE_URL_UNPOOLED,
+    process.env.VERCEL_POSTGRES_URL,
+    process.env.POSTGRES_PRISMA_URL,
+    process.env.DIRECT_URL,
+    process.env.DATABASE_URL_DIRECT,
+    process.env.PG_CONNECTION_STRING,
   ];
 
   for (const candidate of candidates) {
