@@ -60,7 +60,7 @@ export function runTests(): { passed: number; failed: number; results: Array<{ t
     });
     assert(legalColor === 60, 'Legal Color 3 pages x 2 copies should equal ₱60.00', `Got ${legalColor}`);
 
-    // Duplex discount (10% discount)
+    // Back-to-Back surcharge (+₱5; no duplex discount)
     const a4Duplex = calculateFileSubtotal({
       pages: 10,
       copies: 1,
@@ -68,7 +68,7 @@ export function runTests(): { passed: number; failed: number; results: Array<{ t
       printType: 'bw',
       duplex: 'double_long',
     });
-    assert(a4Duplex === 45, 'A4 B&W 10 pages with 10% duplex discount should equal ₱45.00', `Got ${a4Duplex}`);
+    assert(a4Duplex === 55, 'A4 B&W 10 pages with Back-to-Back surcharge should equal ₱55.00', `Got ${a4Duplex}`);
 
     // Combined order price with binding (staple ₱5)
     const totalWithStaple = calculateOrderPrice({
