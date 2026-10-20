@@ -307,6 +307,19 @@ export async function updateOrderStatusApi(
   return data.order;
 }
 
+export async function updateOrderPrintOptionsApi(
+  orderId: string,
+  payload: { binding: string; files: Array<{ id: string; paperSize: string; paperType: string; photoPaperSize?: string; duplex: string; borderless: boolean; quality: string; printType: string; orientation: string }> }
+): Promise<PrintOrder> {
+  const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/print-options`, {
+    method: 'PATCH',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  });
+  const data = await parseJsonResponse(res);
+  return data.order;
+}
+
 export async function retryTelegramDelivery(orderId: string): Promise<any> {
   const res = await fetch(`/api/admin/orders/${orderId}/retry-telegram`, {
     method: 'POST',
