@@ -87,7 +87,7 @@ export function AdminView({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [authorizedDevices, setAuthorizedDevices] = useState<any[]>([]);
-  const [isLoadingDevices, setIsLoadingDevices] = useState(false);
+  const [isLoadingDevices, setIsLoadingDevices] = useState(false);\n  const [isSavingOptions, setIsSavingOptions] = useState(false);
 
   // Selected Order Modal
   const [selectedOrder, setSelectedOrder] = useState<PrintOrder | null>(null);
@@ -228,6 +228,35 @@ export function AdminView({
     const reason = window.prompt(`Please provide reason for cancelling Order #${order.queueNumber}:`, 'Customer requested cancellation at counter');
     if (reason !== null) {
       handleStatusChange(order.id, 'cancelled', reason || 'Cancelled by staff');
+    }
+  };
+
+  const handleSavePrintOptions = async () => {
+    if (!selectedOrder) return;
+    setIsSavingOptions(true);
+    try {
+      const updated = await updateOrderPrintOptionsApi(selectedOrder.id, {
+        binding: selectedOrder.binding,
+        files: selectedOrder.files.map(file => ({
+          id: file.id,
+          paperSize: file.paperSize,
+          paperType: file.paperType,
+          photoPaperSize: file.photoPaperSize,
+          duplex: file.duplex,
+          borderless: file.borderless,
+          quality: file.quality,
+          printType: file.printType,
+          orientation: file.orientation,
+        })),
+      });
+      setSelectedOrder(updated);
+      setOrders(prev => prev.map(order => order.id === updated.id ? updated : order));
+      showFlash('Print options saved and total recalculated.');
+      await loadDashboardData();
+    } catch (err: any) {
+      showFlash(err.message || 'Could not save print options.');
+    } finally {
+      setIsSavingOptions(false);
     }
   };
 
@@ -1258,6 +1287,57 @@ export function AdminView({
                 <p className="text-[#5A6E64]">Finishing: {selectedOrder.binding.toUpperCase()}</p>
               </div>
             </div>
+
+            {/* Editable print options */}
+            {!['completed', 'cancelled'].includes(selectedOrder.status) && (
+              <div className="space-y-3 rounded-2xl border border-[#D4DDD5] bg-[#F7F8F5] p-4 animate-in fade-in slide-in-from-bottom-2 duration-200">
+                <div>
+                  <h3 className="text-sm font-bold text-[#20352A]">Edit Print Specifications</h3>
+                  <p className="text-[11px] text-[#5A6E64] mt-1">Changes are saved to the order and pricing is recalculated using current rates.</p>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-[#20352A]">Document Binding</label>
+                  <select value={selectedOrder.binding} onChange={e => setSelectedOrder(prev => prev ? {...prev, binding: e.target.value as any} : prev)} className="w-full rounded-xl border border-[#D4DDD5] bg-white px-3 py-2 text-xs">
+                    <option value="none">No Binding</option><option value="staple">Staple</option><option value="spiral">Spiral Binding</option><option value="booklet">Booklet</option>
+                  </select>
+                </div>
+                {selectedOrder.files.map((file, idx) => (
+                  <div key={file.id} className="rounded-xl border border-[#D4DDD5] bg-white p-3 space-y-3">
+                    <p className="text-xs font-bold text-[#20352A]">{idx + 1}. {file.fileName}</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-[#5A6E64]">Paper Type</label>
+                        <select value={file.paperType} onChange={e => setSelectedOrder(prev => prev ? {...prev, files: prev.files.map(f => f.id === file.id ? {...f, paperType: e.target.value as any, paperSize: e.target.value === 'glossy' ? 'A4' : 'A4', photoPaperSize: e.target.value === 'glossy' ? (f.photoPaperSize || '4x6') : undefined} : f)} : prev)} className="w-full rounded-lg border border-[#D4DDD5] bg-white px-2 py-2 text-xs">
+                          <option value="ordinary">Ordinary Paper</option><option value="glossy">Photo Paper — Glossy</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-[#5A6E64]">Paper Size</label>
+                        <select value={file.paperType === 'glossy' ? (file.photoPaperSize || '4x6') : file.paperSize} onChange={e => setSelectedOrder(prev => prev ? {...prev, files: prev.files.map(f => f.id === file.id ? (f.paperType === 'glossy' ? {...f, photoPaperSize: e.target.value} : {...f, paperSize: e.target.value as PaperSize}) : f)} : prev)} className="w-full rounded-lg border border-[#D4DDD5] bg-white px-2 py-2 text-xs">
+                          {(file.paperType === 'glossy' ? [{v:'4x6',t:'4×6 Photo'},{v:'5x7',t:'5×7 Photo'},{v:'A4',t:'A4 Photo'}] : [{v:'A4',t:'A4'},{v:'Letter',t:'Letter'},{v:'Legal',t:'Legal'},{v:'A3',t:'A3'}]).map(o => <option key={o.v} value={o.v}>{o.t}</option>)}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-[#5A6E64]">Print Color</label>
+                        <select value={file.printType} onChange={e => setSelectedOrder(prev => prev ? {...prev, files: prev.files.map(f => f.id === file.id ? {...f, printType: e.target.value as any} : f)} : prev)} className="w-full rounded-lg border border-[#D4DDD5] bg-white px-2 py-2 text-xs"><option value="bw">Black & White</option><option value="color">Color</option></select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-[#5A6E64]">Sides</label>
+                        <select value={file.duplex === 'single' ? 'single' : 'back_to_back'} onChange={e => setSelectedOrder(prev => prev ? {...prev, files: prev.files.map(f => f.id === file.id ? {...f, duplex: e.target.value as any} : f)} : prev)} className="w-full rounded-lg border border-[#D4DDD5] bg-white px-2 py-2 text-xs"><option value="single">Single-Sided</option><option value="back_to_back">Back-to-Back (+ surcharge)</option></select>
+                      </div>
+                      <label className="flex items-center gap-2 text-xs text-[#20352A]"><input type="checkbox" checked={file.borderless} onChange={e => setSelectedOrder(prev => prev ? {...prev, files: prev.files.map(f => f.id === file.id ? {...f, borderless: e.target.checked} : f)} : prev)} /> Borderless</label>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-[#5A6E64]">Quality</label>
+                        <select value={file.quality} onChange={e => setSelectedOrder(prev => prev ? {...prev, files: prev.files.map(f => f.id === file.id ? {...f, quality: e.target.value as any} : f)} : prev)} className="w-full rounded-lg border border-[#D4DDD5] bg-white px-2 py-2 text-xs"><option value="standard">Standard</option><option value="high">High Quality</option></select>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <button type="button" disabled={isSavingOptions} onClick={handleSavePrintOptions} className="w-full rounded-xl bg-[#23664B] px-4 py-2.5 text-xs font-bold text-white transition-all hover:bg-[#1b513b] hover:shadow-md disabled:opacity-60">
+                  {isSavingOptions ? 'Saving & recalculating…' : 'Save Print Options & Recalculate Total'}
+                </button>
+              </div>
+            )}
 
             {/* Files list */}
             <div className="space-y-2">
