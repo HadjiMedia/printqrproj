@@ -148,8 +148,14 @@ export function AdminView({
     setLoginError(null);
 
     try {
-      await adminLogin(username.trim(), password.trim());
-      onLoginChange(true);
+      const result = await adminLogin(username.trim(), password.trim());
+      if (result.success && result.token) {
+        onLoginChange(true);
+      } else if (result.requireApproval) {
+        setLoginError(result.message || 'This device needs approval from your primary admin device. Approve it there, then sign in again.');
+      } else {
+        throw new Error(result.message || 'The server did not create an admin session. Please try again.');
+      }
     } catch (err: any) {
       setLoginError(err.message || 'Authentication failed. Please check credentials.');
     } finally {
