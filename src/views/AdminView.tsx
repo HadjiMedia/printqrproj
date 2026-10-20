@@ -41,7 +41,10 @@ import {
   getFileDownloadUrl,
   getZipDownloadUrl,
   submitOrder,
-  fetchSettings
+  fetchSettings,
+  fetchAuthorizedDevices,
+  approveDeviceApi,
+  revokeDeviceApi
 } from '../services/api';
 import { SHOPS, formatBytes, DEFAULT_PRICING } from '../data/mockData';
 import { StatusBadge } from '../components/StatusBadge';
@@ -66,7 +69,7 @@ export function AdminView({
 
   // Dashboard state
   const [orders, setOrders] = useState<PrintOrder[]>([]);
-  const [activeTab, setActiveTab] = useState<'active' | 'waiting' | 'printing' | 'ready' | 'completed' | 'cancelled' | 'all' | 'pricing' | 'telegram'>('active');
+  const [activeTab, setActiveTab] = useState<'active' | 'waiting' | 'printing' | 'ready' | 'completed' | 'cancelled' | 'all' | 'pricing' | 'telegram' | 'devices'>('active');
   const [searchQuery, setSearchQuery] = useState('');
   const [stats, setStats] = useState({
     total: 0,
@@ -83,6 +86,8 @@ export function AdminView({
   const [shopsList, setShopsList] = useState(SHOPS);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [authorizedDevices, setAuthorizedDevices] = useState<any[]>([]);
+  const [isLoadingDevices, setIsLoadingDevices] = useState(false);
 
   // Selected Order Modal
   const [selectedOrder, setSelectedOrder] = useState<PrintOrder | null>(null);
@@ -109,7 +114,7 @@ export function AdminView({
     try {
       const [ordersRes, statsRes] = await Promise.all([
         getAdminOrders({
-          tab: activeTab === 'pricing' || activeTab === 'telegram' ? 'all' : activeTab,
+          tab: activeTab === 'pricing' || activeTab === 'telegram' || activeTab === 'devices' ? 'all' : activeTab,
           search: searchQuery || undefined,
           limit: 100,
         }),
@@ -133,6 +138,42 @@ export function AdminView({
       return () => clearInterval(interval);
     }
   }, [isAdminLoggedIn, activeTab, searchQuery]);
+
+  const loadDevices = async () => {
+    setIsLoadingDevices(true);
+    try {
+      setAuthorizedDevices(await fetchAuthorizedDevices());
+    } catch (err: any) {
+      showFlash(err.message || 'Unable to load device requests.');
+    } finally {
+      setIsLoadingDevices(false);
+    }
+  };
+
+  const handleApproveDevice = async (deviceId: string) => {
+    try {
+      await approveDeviceApi(deviceId);
+      showFlash('Device approved. Ask the device to sign in again.');
+      await loadDevices();
+    } catch (err: any) {
+      alert(err.message || 'Unable to approve device.');
+    }
+  };
+
+  const handleRevokeDevice = async (deviceId: string) => {
+    if (!window.confirm('Revoke this device? Its access will be blocked.')) return;
+    try {
+      await revokeDeviceApi(deviceId);
+      showFlash('Device access revoked.');
+      await loadDevices();
+    } catch (err: any) {
+      alert(err.message || 'Unable to revoke device.');
+    }
+  };
+
+  useEffect(() => {
+    if (isAdminLoggedIn && activeTab === 'devices') loadDevices();
+  }, [isAdminLoggedIn, activeTab]);
 
   // Synchronize persisted pricing settings from Neon database
   useEffect(() => {
@@ -539,7 +580,18 @@ export function AdminView({
 
             <button
               type="button"
-              onClick={() => setActiveTab('telegram')}
+              onClick={() => setActiveTab('devices')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1 ${
+                activeTab === 'devices' ? 'bg-[#23664B] text-white shadow-2xs' : 'text-[#5A6E64] hover:bg-[#F7F8F5]'
+              }`}
+            >
+              <Shield className="w-3 h-3" />
+              <span>Device Approvals</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('telegram')
               className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1 ${
                 activeTab === 'telegram' ? 'bg-[#20352A] text-white shadow-2xs' : 'text-[#5A6E64] hover:bg-[#F7F8F5]'
               }`}
@@ -569,7 +621,7 @@ export function AdminView({
         </div>
 
         {/* Search input */}
-        {activeTab !== 'pricing' && activeTab !== 'telegram' && (
+        {activeTab !== 'pricing' && activeTab !== 'telegram' && activeTab !== 'devices' && (
           <div className="max-w-md">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#5A6E64]" />
@@ -586,7 +638,43 @@ export function AdminView({
       </div>
 
       {/* Tab Content Views */}
-      {activeTab === 'telegram' ? (
+      {activeTab === 'devices' ? (
+        <div className="bg-white rounded-2xl p-6 border border-[#D4DDD5] shadow-2xs space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="font-bold text-base text-[#20352A]">Trusted Device Management</h3>
+              <p className="text-xs text-[#5A6E64] mt-1">Approve new staff devices here. Only approve devices you recognize.</p>
+            </div>
+            <button type="button" onClick={loadDevices} disabled={isLoadingDevices} className="px-3 py-2 rounded-xl border border-[#D4DDD5] text-xs font-semibold text-[#20352A]">{isLoadingDevices ? 'Refreshing…' : 'Refresh'}</button>
+          </div>
+          {isLoadingDevices ? (
+            <p className="text-sm text-[#5A6E64]">Loading device requests…</p>
+          ) : authorizedDevices.length === 0 ? (
+            <p className="text-sm text-[#5A6E64] bg-[#F7F8F5] rounded-xl p-4">No device records found.</p>
+          ) : (
+            <div className="space-y-3">
+              {authorizedDevices.map((device, index) => (
+                <div key={device.deviceId || device.id || index} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl border border-[#D4DDD5]">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-sm text-[#20352A] break-words">{device.deviceName || 'Unnamed device'} {device.isPrimary ? '· Primary' : ''}</p>
+                    <p className="text-xs text-[#5A6E64] mt-1">Status: <span className="font-semibold">{device.status || 'unknown'}</span></p>
+                    {device.requestId && <p className="text-xs text-[#5A6E64]">Request: {device.requestId}</p>}
+                    {device.createdAt && <p className="text-xs text-[#5A6E64]">Requested: {new Date(device.createdAt).toLocaleString()}</p>}
+                  </div>
+                  <div className="flex flex-wrap gap-2 shrink-0">
+                    {device.status === 'pending' && device.deviceId && (
+                      <button type="button" onClick={() => handleApproveDevice(device.deviceId)} className="px-3 py-2 rounded-lg bg-[#23664B] text-white text-xs font-bold">Approve Device</button>
+                    )}
+                    {device.status === 'approved' && !device.isPrimary && device.deviceId && (
+                      <button type="button" onClick={() => handleRevokeDevice(device.deviceId)} className="px-3 py-2 rounded-lg border border-rose-300 text-rose-700 text-xs font-bold">Revoke Access</button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : activeTab === 'telegram' ? (
         <TelegramPanel />
       ) : activeTab === 'pricing' ? (
         /* Pricing Manager Tab (Section D & F) */
