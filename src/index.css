@@ -36,3 +36,25 @@
 .animate-pulse-slow {
   animation: pulse-slow 2.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
+
+/* Subtle, accessible motion for customer and staff workflows */
+@keyframes pd-fade-up {
+  from { opacity: 0; transform: translate3d(0, 10px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+@keyframes pd-soft-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(35, 102, 75, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(35, 102, 75, 0.08); }
+}
+.pd-fade-up { animation: pd-fade-up 360ms ease-out both; }
+.pd-interactive { transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease; }
+.pd-interactive:hover { transform: translateY(-2px); box-shadow: 0 8px 22px rgba(32, 53, 42, 0.08); }
+.pd-focus-ring:focus-visible { outline: 3px solid rgba(35, 102, 75, 0.35); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

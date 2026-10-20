@@ -927,6 +927,84 @@ export async function updateOrderStatus(
   return order;
 }
 
+export async function updateOrderPrintOptions(
+  orderId: string,
+  binding: string,
+  files: Array<{
+    id: string;
+    paperSize: string;
+    paperType: string;
+    photoPaperSize?: string;
+    duplex: string;
+    borderless: boolean;
+    quality: string;
+    printType: string;
+    orientation: string;
+    baseCost: number;
+    backToBackSurcharge: number;
+    borderlessSurcharge: number;
+    qualitySurcharge: number;
+    subtotal: number;
+  }>,
+  totalPrice: number,
+  staffName = 'staff'
+): Promise<PrintOrder | null> {
+  const pool = getPgPool();
+  const timestamp = new Date().toISOString();
+  if (pool) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const existing = await client.query('SELECT id FROM printdrop_orders WHERE id = $1 FOR UPDATE', [orderId]);
+      if (!existing.rows.length) { await client.query('ROLLBACK'); return null; }
+      for (const f of files) {
+        const result = await client.query(
+          `UPDATE printdrop_order_files SET paper_size=$1, paper_type=$2, photo_paper_size=$3,
+           duplex=$4, borderless=$5, quality=$6, print_type=$7, orientation=$8,
+           base_cost=$9, back_to_back_surcharge=$10, borderless_surcharge=$11,
+           quality_surcharge=$12, subtotal=$13 WHERE order_id=$14 AND id=$15`,
+          [f.paperSize, f.paperType, f.photoPaperSize || null, f.duplex, f.borderless, f.quality,
+           f.printType, f.orientation, f.baseCost, f.backToBackSurcharge, f.borderlessSurcharge,
+           f.qualitySurcharge, f.subtotal, orderId, f.id]
+        );
+        if (!result.rowCount) throw new Error('A file in this order could not be updated. Refresh and try again.');
+      }
+      await client.query('UPDATE printdrop_orders SET binding=$1, total_price=$2, updated_at=$3 WHERE id=$4',
+        [binding, totalPrice, timestamp, orderId]);
+      await client.query(
+        'INSERT INTO printdrop_status_history (order_id,status,timestamp,changed_by,note) SELECT id,status,$1,$2,$3 FROM printdrop_orders WHERE id=$4',
+        [timestamp, staffName, 'Staff edited print specifications and recalculated order total.', orderId]
+      );
+      await client.query('COMMIT');
+      return await fetchOrderById(orderId);
+    } catch (err) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+      throw err;
+    } finally { client.release(); }
+  }
+  if (isServerless) throw new OrderPersistenceError('DATABASE_NOT_CONFIGURED', 'Order storage is not configured on the server. Please contact Maxin counter staff.');
+  const db = getDatabase();
+  const order = db.orders.find(o => o.id === orderId);
+  if (!order) return null;
+  order.binding = binding as any;
+  order.totalPrice = totalPrice;
+  order.updatedAt = timestamp;
+  for (const upd of files) {
+    const file = order.files.find(f => f.id === upd.id);
+    if (!file) continue;
+    Object.assign(file, {
+      paperSize: upd.paperSize, paperType: upd.paperType, photoPaperSize: upd.photoPaperSize,
+      duplex: upd.duplex, borderless: upd.borderless, quality: upd.quality, printType: upd.printType,
+      orientation: upd.orientation, baseCost: upd.baseCost,
+      surcharges: { backToBack: upd.backToBackSurcharge, borderless: upd.borderlessSurcharge, quality: upd.qualitySurcharge },
+      subtotal: upd.subtotal,
+    });
+  }
+  order.statusHistory.unshift({ status: order.status, timestamp, changedBy: staffName, note: 'Staff edited print specifications and recalculated order total.' });
+  saveDatabase(db);
+  return order;
+}
+
 export async function deleteOrder(orderId: string): Promise<boolean> {
   const pool = getPgPool();
   if (pool) {
