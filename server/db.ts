@@ -669,6 +669,8 @@ export async function fetchOrderById(id: string): Promise<PrintOrder | null> {
           })),
         };
       }
+      // A successful query with no matching row is a normal not-found result.
+      return null;
     } catch (err) {
       console.error('[DB] Error querying order by ID from Neon:', err);
       if (isServerless) {
@@ -709,6 +711,8 @@ export async function fetchOrderByClientRequestId(clientRequestId: string): Prom
       if (res.rows.length > 0) {
         return fetchOrderById(res.rows[0].id);
       }
+      // A successful duplicate-check query with no match means this is a new request.
+      return null;
     } catch (err) {
       console.warn('[DB] Error checking client_request_id in Neon:', err);
       if (isServerless) {
