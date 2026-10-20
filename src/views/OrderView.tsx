@@ -365,7 +365,7 @@ export function OrderView({ onNavigate }: OrderViewProps) {
   }
 
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 pd-fade-up">
       {/* Header */}
       <div className="mb-8">
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#eef4f1] text-[#23664B] text-xs font-semibold mb-2">
@@ -469,7 +469,7 @@ export function OrderView({ onNavigate }: OrderViewProps) {
               handleAddFiles(e.dataTransfer.files);
             }}
             onClick={() => fileInputRef.current?.click()}
-            className="border-2 border-dashed border-[#D4DDD5] hover:border-[#23664B] rounded-2xl p-6 text-center cursor-pointer bg-[#F7F8F5] transition-colors"
+            className="border-2 border-dashed border-[#D4DDD5] hover:border-[#23664B] rounded-2xl p-6 text-center cursor-pointer bg-[#F7F8F5] pd-interactive transition-colors"
           >
             <input
               ref={fileInputRef}
