@@ -34,6 +34,7 @@ import {
   checkAdminAuth, 
   getAdminOrders, 
   updateOrderStatusApi, 
+  updateOrderPrintOptionsApi,
   deleteOrderApi, 
   retryTelegramDelivery, 
   getAdminStats, 
