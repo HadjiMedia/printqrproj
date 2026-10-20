@@ -308,9 +308,7 @@ export function OrderView({ onNavigate }: OrderViewProps) {
         })
       );
 
-      setUploadProgress(90);
-
-      const res = await submitOrder({
+      const orderPayload = {
         customerName: customerName.trim(),
         customerPhone: customerPhone.trim() || undefined,
         customerEmail: customerEmail.trim() || undefined,
@@ -319,7 +317,21 @@ export function OrderView({ onNavigate }: OrderViewProps) {
         binding,
         instructions: instructions.trim() || undefined,
         files: payloadFiles,
-      });
+      };
+
+      // Vercel serverless request bodies are limited to about 4.5 MB.
+      // Check the fully encoded JSON payload first so customers receive a clear
+      // recovery instruction instead of a generic 413/server error.
+      const payloadBytes = new Blob([JSON.stringify(orderPayload)]).size;
+      const maxRequestBytes = 4 * 1024 * 1024;
+      if (payloadBytes > maxRequestBytes) {
+        throw new Error(
+          'These files are too large to send together (the upload request must be under 4 MB). Please reduce the PDF/photo file sizes or submit fewer/smaller files in a new order.'
+        );
+      }
+
+      setUploadProgress(90);
+      const res = await submitOrder(orderPayload);
 
       clearInterval(progressTimer);
       setUploadProgress(100);
