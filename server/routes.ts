@@ -18,6 +18,7 @@ import {
   fetchOrderById,
   insertOrder,
   updateOrderStatus,
+  updateOrderPrintOptions,
   deleteOrder,
   getDevices,
   getDeviceByDeviceId,
@@ -748,6 +749,69 @@ router.get('/admin/orders', requireAdmin, async (req: Request, res: Response) =>
     pageSize,
     totalPages: Math.ceil(totalCount / pageSize),
   });
+});
+
+// Staff can edit print specifications; the server recalculates all prices from current saved rates.
+router.patch('/admin/orders/:id/print-options', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const order = await fetchOrderById(String(req.params.id));
+    if (!order) return sendError(res, 404, 'ORDER_NOT_FOUND', 'Order not found.');
+    if (['completed', 'cancelled'].includes(order.status)) {
+      return sendError(res, 409, 'ORDER_LOCKED', 'Completed or cancelled orders cannot be edited.');
+    }
+    const { binding, files } = req.body || {};
+    const validBindings = ['none', 'staple', 'spiral', 'booklet'];
+    if (!validBindings.includes(binding)) return sendError(res, 400, 'INVALID_BINDING', 'Select a valid document binding.');
+    if (!Array.isArray(files) || files.length !== order.files.length) {
+      return sendError(res, 400, 'INVALID_FILES', 'Refresh the order and try again. File list does not match.');
+    }
+    const pricing = await loadPricingSettings();
+    const processed: any[] = [];
+    for (const input of files) {
+      const original = order.files.find(file => file.id === input.id);
+      if (!original) return sendError(res, 400, 'INVALID_FILE', 'A file does not belong to this order.');
+      const paperType = input.paperType === 'glossy' ? 'glossy' : 'ordinary';
+      const photoPaperSize = paperType === 'glossy' ? String(input.photoPaperSize || '4x6') : undefined;
+      const paperSize = paperType === 'glossy'
+        ? (['4x6', '5x7', 'A4'].includes(photoPaperSize || '') ? photoPaperSize : '4x6')
+        : (['Letter', 'A4', 'Legal', 'A3'].includes(input.paperSize) ? input.paperSize : 'A4');
+      const duplex = input.duplex === 'back_to_back' ? 'back_to_back' : 'single';
+      const borderless = Boolean(input.borderless);
+      const quality = input.quality === 'high' ? 'high' : 'standard';
+      const printType = input.printType === 'color' ? 'color' : 'bw';
+      const orientation = input.orientation === 'landscape' ? 'landscape' : 'portrait';
+      const optionError = validatePrintOptions({ paperType, photoPaperSize, duplex, borderless, quality }, pricing);
+      if (optionError) return sendError(res, 400, 'INVALID_PRINT_OPTIONS', optionError);
+      const breakdown = calculateFilePricingBreakdown({
+        pages: original.pageCount, copies: original.copies, paperSize: paperSize as any,
+        paperType, photoPaperSize, printType, duplex, borderless, quality, pricing,
+      });
+      processed.push({
+        id: original.id, paperSize, paperType, photoPaperSize, duplex, borderless, quality,
+        printType, orientation, baseCost: breakdown.baseCost,
+        backToBackSurcharge: breakdown.surcharges.backToBack,
+        borderlessSurcharge: breakdown.surcharges.borderless,
+        qualitySurcharge: breakdown.surcharges.quality,
+        subtotal: breakdown.subtotal,
+      });
+    }
+    const totalPrice = calculateOrderPrice({
+      files: order.files.map(original => {
+        const updated = processed.find(file => file.id === original.id)!;
+        return { pages: original.pageCount, copies: original.copies, paperSize: updated.paperSize,
+          paperType: updated.paperType, photoPaperSize: updated.photoPaperSize, printType: updated.printType,
+          duplex: updated.duplex, borderless: updated.borderless, quality: updated.quality };
+      }),
+      binding, pricing,
+    });
+    const updated = await updateOrderPrintOptions(order.id, binding, processed, totalPrice, 'staff');
+    if (!updated) return sendError(res, 404, 'ORDER_NOT_FOUND', 'Order not found.');
+    logAudit('staff', 'PRINT_OPTIONS_UPDATED', `Updated print specifications for order ${order.id}; total ₱${totalPrice.toFixed(2)}.`);
+    return res.json({ success: true, order: updated });
+  } catch (err) {
+    console.error('[API] Failed to update print specifications:', err);
+    return next(err);
+  }
 });
 
 // 14. Admin: Update Order Status
