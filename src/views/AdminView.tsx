@@ -591,7 +591,7 @@ export function AdminView({
 
             <button
               type="button"
-              onClick={() => setActiveTab('telegram')
+              onClick={() => setActiveTab('telegram')}
               className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1 ${
                 activeTab === 'telegram' ? 'bg-[#20352A] text-white shadow-2xs' : 'text-[#5A6E64] hover:bg-[#F7F8F5]'
               }`}
