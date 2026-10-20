@@ -68,7 +68,7 @@ export function runTests(): { passed: number; failed: number; results: Array<{ t
       printType: 'bw',
       duplex: 'double_long',
     });
-    assert(a4Duplex === 45, 'A4 B&W 10 pages with 10% duplex discount should equal ₱45.00', `Got ${a4Duplex}`);
+    assert(a4Duplex === 55, 'A4 B&W 10 pages with Back-to-Back surcharge should equal ₱55.00', `Got ${a4Duplex}`);
 
     // Combined order price with binding (staple ₱5)
     const totalWithStaple = calculateOrderPrice({
