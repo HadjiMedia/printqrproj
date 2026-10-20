@@ -60,7 +60,7 @@ export function runTests(): { passed: number; failed: number; results: Array<{ t
     });
     assert(legalColor === 60, 'Legal Color 3 pages x 2 copies should equal ₱60.00', `Got ${legalColor}`);
 
-    // Duplex discount (10% discount)
+    // Back-to-Back surcharge (+₱5; no duplex discount)
     const a4Duplex = calculateFileSubtotal({
       pages: 10,
       copies: 1,
