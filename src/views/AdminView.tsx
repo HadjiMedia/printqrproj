@@ -88,7 +88,8 @@ export function AdminView({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [authorizedDevices, setAuthorizedDevices] = useState<any[]>([]);
-  const [isLoadingDevices, setIsLoadingDevices] = useState(false);\n  const [isSavingOptions, setIsSavingOptions] = useState(false);
+  const [isLoadingDevices, setIsLoadingDevices] = useState(false);
+  const [isSavingOptions, setIsSavingOptions] = useState(false);
 
   // Selected Order Modal
   const [selectedOrder, setSelectedOrder] = useState<PrintOrder | null>(null);
