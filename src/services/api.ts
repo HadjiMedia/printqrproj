@@ -102,11 +102,19 @@ export async function submitOrder(payload: {
   order: PrintOrder; 
   error?: string 
 }> {
-  const res = await fetch('/api/orders', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  let res: Response;
+  try {
+    res = await fetch('/api/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (_error) {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      throw new Error('You appear to be offline. Reconnect to the internet and try again. Your selected files are still on this page.');
+    }
+    throw new Error('Could not reach the print server. Check your internet connection and try again. Your selected files are still on this page; do not refresh before retrying.');
+  }
 
   return await parseJsonResponse(res);
 }
