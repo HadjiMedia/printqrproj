@@ -875,43 +875,6 @@ export function AdminView({
                 </div>
               </div>
 
-              {/* A3 Large Paper */}
-              <div className="p-4 rounded-xl border border-[#D4DDD5] bg-[#F7F8F5] space-y-3">
-                <span className="font-bold text-sm text-[#20352A]">A3 Large Paper</span>
-                <div className="space-y-1">
-                  <label className="text-[11px] text-[#5A6E64]">B&W (₱/page)</label>
-                  <input
-                    type="number"
-                    step="0.5"
-                    value={pricing.pagePrices.A3?.bw ?? 12}
-                    onChange={e => setPricing({
-                      ...pricing,
-                      pagePrices: {
-                        ...pricing.pagePrices,
-                        A3: { ...pricing.pagePrices.A3, bw: parseFloat(e.target.value) || 0, color: pricing.pagePrices.A3?.color ?? 20 }
-                      }
-                    })}
-                    className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] font-bold"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[11px] text-[#5A6E64]">Color (₱/page)</label>
-                  <input
-                    type="number"
-                    step="0.5"
-                    value={pricing.pagePrices.A3?.color ?? 20}
-                    onChange={e => setPricing({
-                      ...pricing,
-                      pagePrices: {
-                        ...pricing.pagePrices,
-                        A3: { ...pricing.pagePrices.A3, color: parseFloat(e.target.value) || 0, bw: pricing.pagePrices.A3?.bw ?? 12 }
-                      }
-                    })}
-                    className="w-full py-1.5 px-2 rounded-lg bg-white border border-[#D4DDD5] font-bold"
-                  />
-                </div>
-              </div>
-
               {/* Photo Paper — Glossy */}
               <div className="p-4 rounded-xl border border-amber-300 bg-amber-50/40 space-y-3">
                 <span className="font-bold text-sm text-amber-900 flex items-center gap-1">
@@ -1316,7 +1279,7 @@ export function AdminView({
                       <div className="space-y-1">
                         <label className="text-[11px] text-[#5A6E64]">Paper Size</label>
                         <select value={file.paperType === 'glossy' ? (file.photoPaperSize || '4x6') : file.paperSize} onChange={e => setSelectedOrder(prev => prev ? {...prev, files: prev.files.map(f => f.id === file.id ? (f.paperType === 'glossy' ? {...f, photoPaperSize: e.target.value} : {...f, paperSize: e.target.value as PaperSize}) : f)} : prev)} className="w-full rounded-lg border border-[#D4DDD5] bg-white px-2 py-2 text-xs">
-                          {(file.paperType === 'glossy' ? [{v:'4x6',t:'4×6 Photo'},{v:'5x7',t:'5×7 Photo'},{v:'A4',t:'A4 Photo'}] : [{v:'A4',t:'A4'},{v:'Letter',t:'Letter'},{v:'Legal',t:'Legal'},{v:'A3',t:'A3'}]).map(o => <option key={o.v} value={o.v}>{o.t}</option>)}
+                          {(file.paperType === 'glossy' ? [{v:'4x6',t:'4×6 Photo'},{v:'5x7',t:'5×7 Photo'},{v:'A4',t:'A4 Photo'}] : [{v:'A4',t:'A4'},{v:'Letter',t:'Letter'},{v:'Legal',t:'Legal'}]).map(o => <option key={o.v} value={o.v}>{o.t}</option>)}
                         </select>
                       </div>
                       <div className="space-y-1">
