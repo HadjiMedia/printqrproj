@@ -92,6 +92,7 @@ export function OrderView({ onNavigate }: OrderViewProps) {
   // Idempotency token ref (reused on submit retry)
   const clientRequestIdRef = useRef<string>(`req-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 8)}`);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchSettings().then(res => {
@@ -477,7 +478,21 @@ export function OrderView({ onNavigate }: OrderViewProps) {
               multiple
               className="hidden"
               accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.webp,.txt"
-              onChange={e => handleAddFiles(e.target.files)}
+              onChange={e => {
+                handleAddFiles(e.target.files);
+                e.currentTarget.value = '';
+              }}
+            />
+            <input
+              ref={galleryInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              accept="image/*"
+              onChange={e => {
+                handleAddFiles(e.target.files);
+                e.currentTarget.value = '';
+              }}
             />
 
             <div className="space-y-2 py-2">
@@ -493,6 +508,15 @@ export function OrderView({ onNavigate }: OrderViewProps) {
                 </p>
               </div>
             </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-2">
+            <button type="button" onClick={() => fileInputRef.current?.click()} className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl border border-[#D4DDD5] bg-white px-4 py-3 text-sm font-semibold text-[#20352A] hover:border-[#23664B] hover:bg-[#F7F8F5] transition-all">
+              <FileUp className="w-4 h-4" /> Choose Documents
+            </button>
+            <button type="button" onClick={() => galleryInputRef.current?.click()} className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-[#23664B] px-4 py-3 text-sm font-semibold text-white hover:bg-[#1B503A] transition-all">
+              <ImageIcon className="w-4 h-4" /> Choose from Gallery
+            </button>
           </div>
 
           {fileError && (
