@@ -67,6 +67,8 @@ const ALLOWED_EXTENSIONS = ['pdf', 'docx', 'doc', 'jpg', 'jpeg', 'png', 'webp', 
 
 export function OrderView({ onNavigate }: OrderViewProps) {
   // Shop & Pricing
+  const [language, setLanguage] = useState<'en' | 'fil'>('en');
+  const isFilipino = language === 'fil';
   const [pricing, setPricing] = useState<PricingSettings>(DEFAULT_PRICING);
   const [shop, setShop] = useState<ShopLocation>(MAXIN_SHOP);
 
@@ -262,17 +264,17 @@ export function OrderView({ onNavigate }: OrderViewProps) {
     if (isSubmitting) return;
 
     if (!customerName.trim()) {
-      setFormError('Please enter your full name so staff can label your print job.');
+      setFormError('Pakilagay ang buong pangalan mo para matukoy ng staff ang order mo.');
       return;
     }
 
     if (draftFiles.length === 0) {
-      setFormError('Please upload at least one document or photo to print.');
+      setFormError('Mag-upload muna ng kahit isang dokumento o larawan na ipi-print.');
       return;
     }
 
     if (!shop.acceptingOrders) {
-      setFormError('Maxin Printing Service is currently paused and not accepting new orders.');
+      setFormError('Pansamantalang hindi tumatanggap ng bagong order ang Maxin Printing Service.');
       return;
     }
 
@@ -326,7 +328,7 @@ export function OrderView({ onNavigate }: OrderViewProps) {
       const maxRequestBytes = 4 * 1024 * 1024;
       if (payloadBytes > maxRequestBytes) {
         throw new Error(
-          'These files are too large to send together (the upload request must be under 4 MB). Please reduce the PDF/photo file sizes or submit fewer/smaller files in a new order.'
+          isFilipino ? 'Masyadong malaki ang pinagsamang files (dapat mas mababa sa 4 MB). Bawasan ang laki ng PDF/larawan o mag-order gamit ang mas kaunting files.' : 'These files are too large to send together (the upload request must be under 4 MB). Please reduce the PDF/photo file sizes or submit fewer/smaller files in a new order.'
         );
       }
 
@@ -343,7 +345,7 @@ export function OrderView({ onNavigate }: OrderViewProps) {
     } catch (err: any) {
       clearInterval(progressTimer);
       setIsSubmitting(false);
-      setFormError(err.message || 'Error communicating with print server. Please check your network and try again.');
+      setFormError(isFilipino ? (String(err.message || '').toLowerCase().match(/offline|internet|server|fetch|network/) ? 'Hindi ma-send ang file. Baka mahina o walang internet connection. Subukang lumipat sa mas malakas na signal at i-send ulit. Nandito pa rin ang mga napili mong file.' : (err.message || 'Nagkaroon ng error sa pag-send ng order. Pakisubukan ulit.')) : (err.message || 'Error communicating with print server. Please check your network and try again.');
     }
   };
 
@@ -370,13 +372,13 @@ export function OrderView({ onNavigate }: OrderViewProps) {
       <div className="mb-8">
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#eef4f1] text-[#23664B] text-xs font-semibold mb-2">
           <Store className="w-3.5 h-3.5" />
-          <span>Maxin Printing Service — Direct Order</span>
+          <span>{isFilipino ? 'Maxin Printing Service — Direktang Order' : 'Maxin Printing Service — Direct Order'}</span>
         </div>
-        <h1 className="text-2xl sm:text-3xl font-extrabold text-[#20352A]">
-          Place Your Print Order
-        </h1>
+        <div className="flex flex-wrap items-center justify-between gap-3"><h1 className="text-2xl sm:text-3xl font-extrabold text-[#20352A]">
+          {isFilipino ? 'Mag-order ng Printing' : 'Place Your Print Order'}
+        </h1><div className="inline-flex rounded-xl border border-[#D4DDD5] bg-white p-1" aria-label="Language"><button type="button" onClick={() => setLanguage('en')} className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${!isFilipino ? 'bg-[#23664B] text-white' : 'text-[#20352A]'}`}>English</button><button type="button" onClick={() => setLanguage('fil')} className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${isFilipino ? 'bg-[#23664B] text-white' : 'text-[#20352A]'}`}>Filipino</button></div></div>
         <p className="text-xs sm:text-sm text-[#5A6E64] mt-1">
-          Upload documents or photos, configure printing specifications, and pick up at the express counter.
+          {isFilipino ? 'Mag-upload ng dokumento o larawan, piliin ang printing options, at kunin ang order sa counter.' : 'Upload documents or photos, configure printing specifications, and pick up at the express counter.'}
         </p>
 
         {/* Shop Intake Info Bar */}
@@ -407,7 +409,7 @@ export function OrderView({ onNavigate }: OrderViewProps) {
           <div className="flex items-center justify-between border-b border-[#E2E7E2] pb-3">
             <h2 className="text-base font-bold text-[#20352A] flex items-center gap-2">
               <span className="w-6 h-6 rounded-full bg-[#23664B] text-white text-xs flex items-center justify-center font-bold">1</span>
-              Customer Information
+              {isFilipino ? 'Impormasyon ng Customer' : 'Customer Information'}
             </h2>
             <span className="text-xs text-[#5A6E64]">No account registration required</span>
           </div>
@@ -415,20 +417,20 @@ export function OrderView({ onNavigate }: OrderViewProps) {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="space-y-1.5 sm:col-span-1">
               <label className="text-xs font-semibold text-[#20352A]">
-                Full Name <span className="text-rose-600">*</span>
+                {isFilipino ? 'Buong Pangalan' : 'Full Name'} <span className="text-rose-600">*</span>
               </label>
               <input
                 type="text"
                 required
                 value={customerName}
                 onChange={e => setCustomerName(e.target.value)}
-                placeholder="e.g. Juan Dela Cruz"
+                placeholder={isFilipino ? 'Hal. Juan Dela Cruz' : 'e.g. Juan Dela Cruz'}
                 className="w-full text-xs sm:text-sm py-2.5 px-3 rounded-xl bg-[#F7F8F5] border border-[#D4DDD5] text-[#20352A] placeholder:text-[#5A6E64]/60 focus:outline-hidden focus:border-[#23664B]"
               />
             </div>
 
             <div className="space-y-1.5 sm:col-span-1">
-              <label className="text-xs font-semibold text-[#20352A]">Mobile Number (Optional)</label>
+              <label className="text-xs font-semibold text-[#20352A]">{isFilipino ? 'Mobile Number (Opsyonal)' : 'Mobile Number (Optional)'}</label>
               <input
                 type="tel"
                 value={customerPhone}
@@ -439,7 +441,7 @@ export function OrderView({ onNavigate }: OrderViewProps) {
             </div>
 
             <div className="space-y-1.5 sm:col-span-1">
-              <label className="text-xs font-semibold text-[#20352A]">Email (Optional)</label>
+              <label className="text-xs font-semibold text-[#20352A]">{isFilipino ? 'Email (Opsyonal)' : 'Email (Optional)'}</label>
               <input
                 type="email"
                 value={customerEmail}
