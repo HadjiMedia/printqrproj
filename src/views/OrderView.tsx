@@ -345,7 +345,7 @@ export function OrderView({ onNavigate }: OrderViewProps) {
     } catch (err: any) {
       clearInterval(progressTimer);
       setIsSubmitting(false);
-      setFormError(isFilipino ? (String(err.message || '').toLowerCase().match(/offline|internet|server|fetch|network/) ? 'Hindi ma-send ang file. Baka mahina o walang internet connection. Subukang lumipat sa mas malakas na signal at i-send ulit. Nandito pa rin ang mga napili mong file.' : (err.message || 'Nagkaroon ng error sa pag-send ng order. Pakisubukan ulit.')) : (err.message || 'Error communicating with print server. Please check your network and try again.');
+      setFormError(isFilipino ? (String(err.message || '').toLowerCase().match(/offline|internet|server|fetch|network/) ? 'Hindi ma-send ang file. Baka mahina o walang internet connection. Subukang lumipat sa mas malakas na signal at i-send ulit. Nandito pa rin ang mga napili mong file.' : (err.message || 'Nagkaroon ng error sa pag-send ng order. Pakisubukan ulit.')) : (err.message || 'Error communicating with print server. Please check your network and try again.'));
     }
   };
 
