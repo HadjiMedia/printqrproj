@@ -398,7 +398,7 @@ async function initNeonSchema(): Promise<void> {
     if (parseInt(adminCheck.rows[0].count, 10) === 0) {
       const staffCreds = hashPassword(process.env.ADMIN_PASSWORD || 'printdrop2025');
       await client.query(
-        'INSERT INTO printdrop_admins (id, username, password_hash, salt, role) VALUES ($1, $2, $3, $4, $5)',
+        'INSERT INTO printdrop_admins (id, username, password_hash, salt, role) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING',
         ['admin-1', 'staff', staffCreds.hash, staffCreds.salt, 'staff']
       );
     }
@@ -851,10 +851,10 @@ export async function updateOrderStatus(
       await client.query('BEGIN');
       const result = await client.query(
         `UPDATE printdrop_orders
-         SET status = $1,
+         SET status = $1::varchar,
              status_message = $2,
              updated_at = $3,
-             completed_at = CASE WHEN CAST($1 AS varchar) = 'completed' THEN $3 ELSE completed_at END
+             completed_at = CASE WHEN $1::varchar = 'completed' THEN $3 ELSE completed_at END
          WHERE id = $4
          RETURNING id`,
         [status, note || `Status updated to ${status}`, timestamp, orderId]
