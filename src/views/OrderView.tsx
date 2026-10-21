@@ -53,7 +53,7 @@ interface UploadDraftFile {
   pageCount: number;
   copies: number;
   paperType: PaperType;        // 'ordinary' | 'glossy'
-  paperSize: PaperSize;        // 'Letter' | 'A4' | 'Legal' | 'A3'
+  paperSize: PaperSize;        // 'Letter' | 'A4' | 'Legal'
   photoPaperSize: string;      // '4x6' | '5x7' | 'A4'
   printType: PrintType;        // 'bw' | 'color'
   orientation: Orientation;    // 'portrait' | 'landscape'
@@ -630,8 +630,7 @@ export function OrderView({ onNavigate }: OrderViewProps) {
                               <option value="Letter">Letter / Short (₱3/₱6)</option>
                               <option value="A4">A4 Standard (₱5/₱8)</option>
                               <option value="Legal">Legal / Long (₱7/₱10)</option>
-                              <option value="A3">A3 Large (₱12/₱20)</option>
-                            </select>
+                                            </select>
                           )}
                         </div>
 
