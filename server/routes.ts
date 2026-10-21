@@ -254,7 +254,7 @@ router.post('/orders', async (req: Request, res: Response) => {
       const photoPaperSize = isGlossy ? (f.photoPaperSize || '4x6') : undefined;
       const paperSize = isGlossy 
         ? (['4x6', '5x7', 'A4'].includes(photoPaperSize || '') ? photoPaperSize as any : '4x6') 
-        : (['Letter', 'A4', 'Legal', 'A3'].includes(f.paperSize) ? f.paperSize : 'A4');
+        : (['Letter', 'A4', 'Legal'].includes(f.paperSize) ? f.paperSize : 'A4');
       const printType = f.printType === 'color' ? 'color' : 'bw';
       const orientation = f.orientation === 'landscape' ? 'landscape' : 'portrait';
       
@@ -774,7 +774,7 @@ router.patch('/admin/orders/:id/print-options', requireAdmin, async (req: Reques
       const photoPaperSize = paperType === 'glossy' ? String(input.photoPaperSize || '4x6') : undefined;
       const paperSize = paperType === 'glossy'
         ? (['4x6', '5x7', 'A4'].includes(photoPaperSize || '') ? photoPaperSize : '4x6')
-        : (['Letter', 'A4', 'Legal', 'A3'].includes(input.paperSize) ? input.paperSize : 'A4');
+        : (['Letter', 'A4', 'Legal'].includes(input.paperSize) ? input.paperSize : 'A4');
       const duplex = input.duplex === 'back_to_back' ? 'back_to_back' : 'single';
       const borderless = Boolean(input.borderless);
       const quality = input.quality === 'high' ? 'high' : 'standard';
